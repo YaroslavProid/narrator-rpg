@@ -26,7 +26,7 @@ def build_system(scene: Scene) -> str:
 
 # Язык и стиль
 - Пиши ТОЛЬКО по-русски. Имена, навыки и намерения в тегах — тоже по-русски.
-- Настоящее время, второе лицо («ты»). Кратко: весь ответ на ход — не больше 120 слов.
+- Настоящее время, второе лицо («ты»). Объём ответа соразмерен сцене (подсказка «Масштаб сцены» в сообщении игрока); не раздувай описания.
 - Допустим мрачный и взрослый контент. Не морализируй и не смягчай.
 
 # Формат ответа (строго, только эти теги)
@@ -36,6 +36,7 @@ def build_system(scene: Scene) -> str:
 <change who="Имя" hp="-5" mp="0" exp="10" add="предмет" remove="предмет"/> — изменение показателей (урон, лечение, опыт, находка, потеря). Указывай только нужные атрибуты.
 <introduce name="Имя" desc="внешность, характер, роль"/> — в сцену входит новый персонаж.
 <leave who="Имя"/> — персонаж уходит из сцены.
+<scale level="камерный|обычный|крупный"/> — необязательно: если масштаб сцены явно другой, чем в подсказке.
 <end/> — конец ответа на ход.
 После тега действия сразу остановись. Система ответит сообщением «[СИСТЕМА: результат] …», и ты продолжишь с <narrate>. Обычный ход: narrate → speak → narrate → end. Персонажи говорят сами, когда это уместно по сцене: вызывай их через speak.
 
@@ -66,20 +67,25 @@ def build_system(scene: Scene) -> str:
     return s
 
 
-def player_message(scene: Scene, state: str, text: str | None) -> str:
+def player_message(scene: Scene, state: str, text: str | None, hint: str = "", memories: list | None = None) -> str:
     if text is None:
         act = "[ПРОДОЛЖИТЬ] Игрок ничего не делает. Мир и персонажи действуют сами: продвинь сцену на шаг."
     else:
         act = f"[ИГРОК] {text.strip()}"
-    return f"{state}\n{act}\n(Только по-русски, кратко, теги протокола. Не пиши за игрока.)"
+    mem = ("[ВОСПОМИНАНИЯ] (из давнего прошлого, используй если уместно)\n" + "\n".join(f"- {m}" for m in memories) + "\n") if memories else ""
+    return f"{state}\n{mem}{act}\n({hint + ' ' if hint else ''}Только по-русски, теги протокола. Не пиши за игрока.)"
 
 
 def speak_block(scene: Scene, c: Character, intent: str, knows: list[str]) -> str:
     in_fixed = c.id in scene.initial_present
     card = "" if in_fixed else "Карточка: " + card_text(c).replace("\n", " ").strip() + "\n"
     secrets = f"Твои тайны (не выдавай без причины): {c.secrets}\n" if c.secrets else ""
-    k = "\n".join(f"- {x}" for x in knows[-8:]) or "- (ничего особенного)"
+    lines = []; total = 0
+    for x in reversed(knows):          # newest first within ~1600 chars (keeps the tail < SWA rollback window)
+        if total + len(x) > 1600: break
+        lines.insert(0, f"- {x}"); total += len(x)
+    k = "\n".join(lines) or "- (ничего особенного)"
     return (f"[РЕПЛИКА] Сейчас говорит {c.name}.\n{card}{secrets}"
-            f"Что {c.name} знает (видел(а) сам(а)):\n{k}\n"
+            f"Что {c.name} знает и помнит (только то, что видел(а) сам(а)):\n{k}\n"
             f"О событиях без {c.name} персонаж не знает.\nНамерение: {intent or 'ответить по ситуации'}.\n"
             f"Ответь 1–3 фразами от лица {c.name}: только прямая речь, по-русски, без повествования, без тегов, без имени в начале.")
