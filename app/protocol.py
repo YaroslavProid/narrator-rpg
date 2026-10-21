@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 TAG_RE = re.compile(r"<\s*(\w+)((?:\s+[\w-]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s/>]+))*)\s*/?\s*>?\s*$", re.S)
 ATTR_RE = re.compile(r"([\w-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s/>]+))")
-ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end"}
-REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": []}
+ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end", "scale"}
+REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": [], "scale": ["level"]}
 
 
 class ParseError(Exception):
@@ -27,9 +27,13 @@ class StepOutput:
     error: str | None = None
 
 
+BROKEN_NARR = re.compile(r"</?\s*narr\w*(?:\s*>|[^\w\s<>]{0,2})")
+
+
 def visible_text(raw: str) -> str:
     """Narration visible so far in a (possibly partial) stream: tags removed, partial tag held back."""
     s = re.sub(r"</?\s*narrate\s*>", "", raw)
+    s = BROKEN_NARR.sub("", s)
     s = re.sub(r"<\s*/?\s*\w+(?:\s+[^<>]*)?/?>", "", s)
     i = s.rfind("<")
     if i != -1:
@@ -86,9 +90,20 @@ def parse_step(content: str, stop_word: str = "") -> StepOutput:
         if stopped_on_tag:
             raw = content + "/>"
     narration = re.sub(r"</?\s*narrate\s*>", "", narr_src)
+    narration = BROKEN_NARR.sub("", narration)
     narration = re.sub(r"<[^>]*>", "", narration)
     narration = re.sub(r"[ \t]+\n", "\n", narration).strip()
+    # canonical history text: a glitch the model produced (e.g. "</narr[") must not be copied back into the
+    # append-only history, or it self-reinforces. Diverging only inside the last model turn is a cheap rollback.
+    if err is None:
+        raw = (f"<narrate>{narration}</narrate>" if narration else "") + \
+              (("\n" if narration else "") + canonical_tag(tag) if tag else "")
     return StepOutput(narration, tag, raw, err)
+
+
+def canonical_tag(tag: "Tag") -> str:
+    attrs = "".join(f' {k}="{v.replace(chr(34), "")}"' for k, v in tag.attrs.items())
+    return f"<{tag.name}{attrs}/>"
 
 
 def split_speech(text: str, names: list[str]) -> list[dict]:
@@ -126,3 +141,18 @@ def cyr_share(text: str, whitelist=()) -> float | None:
             t = t.replace(w, " ")
     c = len(re.findall(r"[А-Яа-яЁё]", t)); l = len(re.findall(r"[A-Za-z]", t))
     return None if c + l == 0 else c / (c + l)
+
+
+def tag_grammar(names: list[str], skills: list[str]) -> str:
+    """GBNF for the format-error retry: exactly one valid action tag."""
+    q = lambda xs: " | ".join('"' + x.replace('"', '') + '"' for x in xs) or '"?"'
+    return "\n".join([
+        'root ::= [ \\n]* ( speak | roll | end )',
+        'speak ::= "<speak who=\\"" name "\\" intent=\\"" txt "\\"/>"',
+        'roll ::= "<roll skill=\\"" skill "\\" dc=\\"" dc "\\"/>"',
+        'end ::= "<end/>"',
+        f"name ::= {q(names)}",
+        f"skill ::= {q(skills)}",
+        'dc ::= [1-2] [0-9] | [5-9]',
+        'txt ::= [^"<>\\n]{3,120}',
+    ])

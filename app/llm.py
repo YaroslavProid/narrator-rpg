@@ -21,14 +21,18 @@ class LLM:
             await asyncio.sleep(2); waited += 2
         raise RuntimeError("llama-server busy too long")
 
+    async def tokenize(self, text: str) -> int:
+        r = await self.client.post(self.url + "/tokenize", json={"content": text})
+        return len(r.json()["tokens"])
+
     async def complete(self, prompt: str, n_predict: int, stop=None, on_delta=None, seed=-1,
-                       temperature=None):
+                       temperature=None, **extra):
         """Stream a completion. Returns (content, stats). stats has cache_n/prompt_n/predicted_n/wall_s."""
         await self.wait_idle()
         body = {"prompt": prompt, "n_predict": n_predict, "stream": True, "cache_prompt": True,
                 "id_slot": 0, "temperature": config.TEMPERATURE if temperature is None else temperature,
                 "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.05, "seed": seed,
-                "stop": stop or []}
+                "stop": stop or [], **extra}
         t0 = time.time(); out = []; timings = {}; stop_word = ""; stop_type = ""
         async with self.client.stream("POST", self.url + "/completion", json=body) as r:
             r.raise_for_status()

@@ -47,3 +47,10 @@ def test_clean_speech_and_cyr():
     assert clean_speech("Сильфа: «Долги сами себя не отдают.»", "Сильфа") == "Долги сами себя не отдают."
     assert cyr_share("Hello world") == 0
     assert cyr_share("Привет, Sylpha", ["Sylpha"]) == 1
+
+
+def test_broken_narrate_close_is_cleaned_and_canonical():
+    o = parse_step('<narrate>Ветер воет.</narr[\n<roll skill="Восприятие" dc="14"', "/>")
+    assert o.narration == "Ветер воет." and o.tag.name == "roll"
+    assert o.raw == '<narrate>Ветер воет.</narrate>\n<roll skill="Восприятие" dc="14"/>'
+    assert visible_text("<narrate>Ветер.</narr[\n<ro") == "Ветер.\n"
