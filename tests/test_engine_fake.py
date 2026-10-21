@@ -5,10 +5,16 @@ from tests.test_mechanics import mk
 
 
 class FakeLLM:
-    def __init__(self, outs): self.outs = list(outs); self.prompts = []
+    def __init__(self, outs): self.outs = list(outs); self.prompts = []; self.bodies = []
 
-    async def complete(self, prompt, n_predict, stop=None, on_delta=None, seed=-1, temperature=None):
-        self.prompts.append(prompt)
+    async def tokenize(self, text): return len(text) // 4
+
+    async def warm(self, prompt): return {"prompt_n": 0, "cache_n": 0}
+
+    async def complete(self, prompt, n_predict, stop=None, on_delta=None, seed=-1, temperature=None, **kw):
+        self.prompts.append(prompt); self.bodies.append(kw)
+        if not self.outs and "json_schema" in kw:
+            return '{"summary": "Сводка по умолчанию о событиях.", "facts": []}', {"prompt_n": 1, "cache_n": 0, "predicted_n": 5}
         text, sw = self.outs.pop(0)
         if on_delta: await on_delta(text)
         return text, {"prompt_n": 1, "cache_n": len(prompt), "predicted_n": 5, "stop_word": sw}
