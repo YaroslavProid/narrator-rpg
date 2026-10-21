@@ -1,0 +1,524 @@
+[
+ {
+  "kind": "input",
+  "input": "Я вхожу в таверну, стряхиваю воду с плаща и подхожу к стойке. Сильфа, налей чего-нибудь крепкого.",
+  "output": "*Тяжёлая дверь таверны захлопывается, отсекая шум ливня. Внутри пахнет дешёвым элем, мокрой шерстью и дымом камина.*\n*Сильфа одаривает тебя оценивающим взглядом, не отрываясь от своей работы. Она ставит перед тобой пустой стакан, едва заметно ухмыляясь.*\nСильфа: Крепкое нынче дорого стоит, путник. Сначала кошелёк, а потом уже и пойло.\n*Ты достаёшь монеты, чувствуя на себе тяжёлый взгляд Борека у камина. Сильфа забирает плату и начинает наполнять стакан мутной жидкостью.*\nБорек: Чего уставился? Ищет чего или просто замерз до смерти?\n*Сильфа ставит перед тобой стакан, и резкий запах перебродившего зерна бьёт в нос. Борек продолжает сверлить тебя глазами, не выпуская рукоять меча из рук.*\nСильфа: Пей уже, наёмник, не задерживай очередь. А разговорчики у камина — дело каждого встречного.",
+  "wall_s": 10.76,
+  "first_chunk_s": 2.0,
+  "chunks": 247,
+  "retracts": 0,
+  "stats": {
+   "turn": 1,
+   "steps": 4,
+   "speaks": 3,
+   "wall_s": 10.76,
+   "llm_calls": [
+    {
+     "wall_s": 2.95,
+     "prompt_n": 517,
+     "cache_n": 678,
+     "predicted_n": 89,
+     "prompt_ms": 724,
+     "predicted_ms": 1283,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.23,
+     "prompt_n": 69,
+     "cache_n": 1283,
+     "predicted_n": 74,
+     "prompt_ms": 186,
+     "predicted_ms": 1033,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.71,
+     "prompt_n": 257,
+     "cache_n": 1425,
+     "predicted_n": 27,
+     "prompt_ms": 336,
+     "predicted_ms": 371,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    },
+    {
+     "wall_s": 1.2,
+     "prompt_n": 48,
+     "cache_n": 1432,
+     "predicted_n": 73,
+     "prompt_ms": 164,
+     "predicted_ms": 1023,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.68,
+     "prompt_n": 333,
+     "cache_n": 1552,
+     "predicted_n": 18,
+     "prompt_ms": 429,
+     "predicted_ms": 246,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    },
+    {
+     "wall_s": 1.27,
+     "prompt_n": 38,
+     "cache_n": 1559,
+     "predicted_n": 79,
+     "prompt_ms": 162,
+     "predicted_ms": 1106,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.88,
+     "prompt_n": 413,
+     "cache_n": 1675,
+     "predicted_n": 26,
+     "prompt_ms": 513,
+     "predicted_ms": 361,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    }
+   ],
+   "prompt_n": 1675,
+   "cache_n": 9604,
+   "predicted_n": 386
+  },
+  "cyr": 1.0
+ },
+ {
+  "kind": "input",
+  "input": "Спрашиваю Сильфу, что она слышала о пропавшем караване.",
+  "output": "*Сильфа замирает, на мгновение перестав протирать стойку. Она бросает быстрый взгляд на Борека, затем наклоняется ближе к тебе.*\nСильфа: О караванах здесь болтают только те, кто хочет быстро опустошить кошелёк или... пропасть в болотах. Говорят, Борека и его ребят видели у старой дороги, но они не из тех, кто оставляет свидетелей.\n*Сильфа прищуривается, ожидая твоей реакции. Борек у камина хмурится, слыша обрывок разговора, и крепче сжимает кружку.*\nБорек: Эй, девка, не болтай лишнего! А ты, мелкотня, лучше за языком следи, пока зубы на месте!\n*Борек с грохотом ставит кружку на стол. Воздух в таверне становится тяжелым от напряжения.*\nСильфа: Ой, да брось, Борек! Твои ребята так громко рыщут по болотам, что даже глухие в городе слышат!\n*Борек медленно поднимается с места, его рука ложится на пояс. Сильфа за стойкой замирает, наблюдая за назревающей стычкой.*\nБорек: Ну что, наёмник, смелости хватило? Посмотрим, как ты запоёшь, когда за тобой придут.",
+  "wall_s": 11.26,
+  "first_chunk_s": 0.65,
+  "chunks": 296,
+  "retracts": 0,
+  "stats": {
+   "turn": 2,
+   "steps": 4,
+   "speaks": 4,
+   "wall_s": 11.26,
+   "llm_calls": [
+    {
+     "wall_s": 1.35,
+     "prompt_n": 180,
+     "cache_n": 1674,
+     "predicted_n": 73,
+     "prompt_ms": 319,
+     "predicted_ms": 1025,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.38,
+     "prompt_n": 429,
+     "cache_n": 1926,
+     "predicted_n": 58,
+     "prompt_ms": 559,
+     "predicted_ms": 817,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    },
+    {
+     "wall_s": 1.21,
+     "prompt_n": 79,
+     "cache_n": 1933,
+     "predicted_n": 69,
+     "prompt_ms": 219,
+     "predicted_ms": 983,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.07,
+     "prompt_n": 449,
+     "cache_n": 2080,
+     "predicted_n": 33,
+     "prompt_ms": 598,
+     "predicted_ms": 467,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    },
+    {
+     "wall_s": 0.97,
+     "prompt_n": 53,
+     "cache_n": 2087,
+     "predicted_n": 56,
+     "prompt_ms": 177,
+     "predicted_ms": 788,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.12,
+     "prompt_n": 455,
+     "cache_n": 2195,
+     "predicted_n": 34,
+     "prompt_ms": 637,
+     "predicted_ms": 478,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    },
+    {
+     "wall_s": 1.05,
+     "prompt_n": 55,
+     "cache_n": 2202,
+     "predicted_n": 61,
+     "prompt_ms": 176,
+     "predicted_ms": 864,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.04,
+     "prompt_n": 443,
+     "cache_n": 2317,
+     "predicted_n": 27,
+     "prompt_ms": 639,
+     "predicted_ms": 393,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    }
+   ],
+   "prompt_n": 2143,
+   "cache_n": 16414,
+   "predicted_n": 411
+  },
+  "cyr": 1.0
+ },
+ {
+  "kind": "input",
+  "input": "Пока Борек дремлет у камина, пытаюсь незаметно снять у него с пояса связку ключей.",
+  "output": "*Ты обходишь Борека со стороны, стараясь не привлекать внимания. Твои движения плавны, но мужчина всё ещё напряжён.*\n[🎲 Проверка «Ловкость рук» (Ярен): 1d20(4) +2 + навык 1= 7 против 15 — провал.]\n*Твои пальцы едва касаются металла, как тяжелый сапог Борека задевает твою ногу. Он резко оборачивается, его взгляд полон подозрения.*\nБорек: Ты что, воришка? Решил проверить, крепко ли я сплю?\n*Борек нависает над тобой, его рука уже на рукояти меча. Сильфа за стойкой лишь насмешливо наблюдает, не спеша помогать.*\nСильфа: Осторожнее, милый, этот хмурый пес кусается громче, чем лает!\n*Борек делает шаг к тебе, сокращая дистанцию. Атмосфера в таверне накаляется.*\nБорек: Ну, раз ты такой шустрый, давай проверим, как ты умеешь драться!",
+  "wall_s": 8.97,
+  "first_chunk_s": 0.65,
+  "chunks": 198,
+  "retracts": 0,
+  "stats": {
+   "turn": 3,
+   "steps": 4,
+   "speaks": 3,
+   "wall_s": 8.97,
+   "llm_calls": [
+    {
+     "wall_s": 1.11,
+     "prompt_n": 178,
+     "cache_n": 2324,
+     "predicted_n": 54,
+     "prompt_ms": 334,
+     "predicted_ms": 765,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.23,
+     "prompt_n": 69,
+     "cache_n": 2555,
+     "predicted_n": 70,
+     "prompt_ms": 226,
+     "predicted_ms": 995,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.92,
+     "prompt_n": 421,
+     "cache_n": 2693,
+     "predicted_n": 18,
+     "prompt_ms": 657,
+     "predicted_ms": 250,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    },
+    {
+     "wall_s": 1.13,
+     "prompt_n": 38,
+     "cache_n": 2700,
+     "predicted_n": 66,
+     "prompt_ms": 173,
+     "predicted_ms": 948,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.97,
+     "prompt_n": 420,
+     "cache_n": 2803,
+     "predicted_n": 22,
+     "prompt_ms": 657,
+     "predicted_ms": 309,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    },
+    {
+     "wall_s": 0.84,
+     "prompt_n": 43,
+     "cache_n": 2810,
+     "predicted_n": 46,
+     "prompt_ms": 180,
+     "predicted_ms": 655,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.96,
+     "prompt_n": 394,
+     "cache_n": 2898,
+     "predicted_n": 21,
+     "prompt_ms": 655,
+     "predicted_ms": 295,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    }
+   ],
+   "prompt_n": 1563,
+   "cache_n": 18783,
+   "predicted_n": 297
+  },
+  "cyr": 1.0
+ },
+ {
+  "kind": "continue",
+  "input": null,
+  "output": "*Борек резко выхватывает нож и делает пробный выпад в твою сторону, проверяя твою реакцию. Сильфа отходит к задней части стойки, готовясь к драке.*\nБорек: Ну, попробуй увернись, щенок!\n*Борек делает резкий выпад ножом, целясь тебе в плечо. Тебе нужно быстро среагировать, чтобы не получить ранение.*\n[🎲 Проверка «Акробатика» (Ярен): 1d20(5) +2 = 7 против 14 — провал.]\n*Ты не успеваешь уйти с линии атаки. Острое лезвие рассекает твой плащ и впивается в плечо, оставляя болезненный порез.*\n[Ярен: HP 20→16/20]\n*Борек довольно ухмыляется, видя кровь. Сильфа вскрикивает, но не двигается с места.*\nБорек: Неплохо, но медленно! Слишком медленно для того, кто хочет выжить!",
+  "wall_s": 7.83,
+  "first_chunk_s": 0.71,
+  "chunks": 182,
+  "retracts": 0,
+  "stats": {
+   "turn": 4,
+   "steps": 4,
+   "speaks": 2,
+   "wall_s": 7.83,
+   "llm_calls": [
+    {
+     "wall_s": 1.33,
+     "prompt_n": 172,
+     "cache_n": 2905,
+     "predicted_n": 67,
+     "prompt_ms": 363,
+     "predicted_ms": 960,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.86,
+     "prompt_n": 400,
+     "cache_n": 3143,
+     "predicted_n": 13,
+     "prompt_ms": 676,
+     "predicted_ms": 178,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    },
+    {
+     "wall_s": 0.95,
+     "prompt_n": 33,
+     "cache_n": 3150,
+     "predicted_n": 55,
+     "prompt_ms": 155,
+     "predicted_ms": 787,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.1,
+     "prompt_n": 64,
+     "cache_n": 3237,
+     "predicted_n": 63,
+     "prompt_ms": 190,
+     "predicted_ms": 904,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 0.99,
+     "prompt_n": 36,
+     "cache_n": 3363,
+     "predicted_n": 58,
+     "prompt_ms": 158,
+     "predicted_ms": 826,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.0,
+     "prompt_n": 397,
+     "cache_n": 3456,
+     "predicted_n": 20,
+     "prompt_ms": 710,
+     "predicted_ms": 281,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    }
+   ],
+   "prompt_n": 1102,
+   "cache_n": 19254,
+   "predicted_n": 276
+  },
+  "cyr": 1.0
+ },
+ {
+  "kind": "input",
+  "input": "Система, статус",
+  "output": "### ⟦ СИСТЕМА · СТАТУС ⟧\n#### Ярен — уровень 1\n❤️ HP 16/20 ████████░░\n🔷 MP 10/10 ██████████\n✨ EXP 0/100\nСила 12 (+1) · Ловкость 14 (+2) · Телосложение 12 (+1) · Интеллект 10 (+0) · Мудрость 12 (+1) · Харизма 11 (+0)\nРежим правил: d20. Ход: 4.\nРядом: Сильфа (HP 20/20), Борек (HP 20/20)",
+  "wall_s": 0.0,
+  "first_chunk_s": 0.0,
+  "chunks": 0,
+  "retracts": 0,
+  "stats": {
+   "turn": 4,
+   "command": "status",
+   "llm_calls": [],
+   "wall_s": 0
+  },
+  "cyr": 0.895
+ },
+ {
+  "kind": "input",
+  "input": "Подсаживаюсь к Бореку, кладу нож на стол и тихо спрашиваю, куда делся караван.",
+  "output": "*Ты прижимаешь руку к раненому плечу, стараясь скрыть боль, и медленно опускаешься на стул напротив Борека. Твой голос звучит тихо, но уверенно.*\n*Борек замирает, глядя на твой окровавленный плащ, а затем переводит взгляд на нож, лежащий на столе. Его хмурое лицо становится ещё мрачнее.*\nБорек: Ты либо смельчак, либо полный дурак, раз пришёл сюда с такими вопросами. Караван не вернётся, а ты вместе с ним.\n*Борек отворачивается к камину, явно не желая продолжать разговор. Сильфа, наблюдая за этой сценой, снова подаётся вперёд, её глаза блестят от любопытства.*\nСильфа: Не слушай этого грубияна, он видит мир через дыру в своём кошельке. Если хочешь знать правду о караване, нужно знать, куда именно смотрят глаза Борека, когда он думает, что его никто не видит.\n*Сильфа подмигивает тебе, намекая на тайное место или время. Борек лишь хмыкает, делая глоток из своей кружки.*\nСильфа: Когда луна скроется за тучами, на болотах станет слишком шумно для обычных путников, но контрабандисты всегда спешат по делам.",
+  "wall_s": 11.57,
+  "first_chunk_s": 0.72,
+  "chunks": 295,
+  "retracts": 0,
+  "stats": {
+   "turn": 5,
+   "steps": 4,
+   "speaks": 4,
+   "wall_s": 11.57,
+   "llm_calls": [
+    {
+     "wall_s": 1.47,
+     "prompt_n": 171,
+     "cache_n": 3463,
+     "predicted_n": 75,
+     "prompt_ms": 386,
+     "predicted_ms": 1078,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.32,
+     "prompt_n": 73,
+     "cache_n": 3708,
+     "predicted_n": 73,
+     "prompt_ms": 257,
+     "predicted_ms": 1051,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.28,
+     "prompt_n": 430,
+     "cache_n": 3853,
+     "predicted_n": 33,
+     "prompt_ms": 800,
+     "predicted_ms": 472,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Борек"
+    },
+    {
+     "wall_s": 1.37,
+     "prompt_n": 53,
+     "cache_n": 3860,
+     "predicted_n": 81,
+     "prompt_ms": 190,
+     "predicted_ms": 1168,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.66,
+     "prompt_n": 451,
+     "cache_n": 3993,
+     "predicted_n": 55,
+     "prompt_ms": 855,
+     "predicted_ms": 796,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    },
+    {
+     "wall_s": 1.23,
+     "prompt_n": 76,
+     "cache_n": 4000,
+     "predicted_n": 66,
+     "prompt_ms": 268,
+     "predicted_ms": 952,
+     "stop_word": "/>",
+     "stop_type": "word",
+     "kind": "narrate"
+    },
+    {
+     "wall_s": 1.43,
+     "prompt_n": 468,
+     "cache_n": 4141,
+     "predicted_n": 36,
+     "prompt_ms": 900,
+     "predicted_ms": 515,
+     "stop_word": "»",
+     "stop_type": "word",
+     "kind": "speak Сильфа"
+    }
+   ],
+   "prompt_n": 1722,
+   "cache_n": 27018,
+   "predicted_n": 419
+  },
+  "cyr": 1.0
+ },
+ {
+  "kind": "input",
+  "input": "Система, инвентарь",
+  "output": "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\n- Короткий меч\n- Нож\n- Кошель",
+  "wall_s": 0.0,
+  "first_chunk_s": 0.0,
+  "chunks": 0,
+  "retracts": 0,
+  "stats": {
+   "turn": 5,
+   "command": "inventory",
+   "llm_calls": [],
+   "wall_s": 0
+  },
+  "cyr": 1.0
+ }
+]
