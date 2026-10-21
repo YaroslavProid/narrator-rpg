@@ -13,6 +13,7 @@ main{flex:1;overflow:hidden;display:flex;position:relative}
 #chat{flex:1;overflow-y:auto;padding:.75rem;scroll-behavior:smooth}
 .m{margin:.35rem 0;white-space:pre-wrap}.narration{font-style:italic;color:#d8d2c4}.speech b{color:var(--sp)}
 .player{color:var(--ac);border-left:3px solid var(--ac);padding-left:.5rem}.system,.roll{background:#16241a;color:var(--sy);border-radius:8px;padding:.4rem .6rem;font-family:ui-monospace,monospace;font-size:.85rem}
+.rw{float:right;background:none;border:0;color:var(--mu);padding:0 .3rem;font-size:.9rem}.mem{color:#b9a3e3;font-size:.8rem}
 .turnstat{color:var(--mu);font-size:.7rem;text-align:right}
 #side{width:min(320px,85vw);background:var(--pn);border-left:1px solid #2a2a30;overflow-y:auto;padding:.75rem;position:absolute;right:0;top:0;bottom:0;transform:translateX(100%);transition:.2s}
 #side.open{transform:none}#side h3{margin:.6rem 0 .2rem;font-size:.95rem;color:var(--ac)}
@@ -61,6 +62,7 @@ footer textarea{flex:1;resize:none;height:2.6rem}
   <button class="pri" id="bSend" onclick="send()">➤</button>
   <button id="bCont" onclick="cont()" title="Продолжить">Продолжить</button>
   <button onclick="sysCmd()" title="Система">⚙</button>
+  <button onclick="regen()" title="Переписать последний ход">↻</button>
 </footer>
 <script>
 const $=id=>document.getElementById(id), side=$('side'), chat=$('chat');
@@ -91,14 +93,19 @@ async function createScene(){const names=['Сила','Ловкость','Тел�
 function add(kind,text,who,id){const d=document.createElement('div');d.className='m '+kind;if(id)d.dataset.id=id;
   setText(d,kind,text,who);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function setText(d,kind,text,who){d.className='m '+kind;d.innerHTML=kind=='speech'?`<b>${esc(who)}:</b> ${esc(text)}`:kind=='narration'?esc(text):esc(text)}
-async function openScene(id){const s=await (await fetch('api/scenes/'+id)).json();scene=s;$('title').textContent=s.title+' · '+s.rule_mode;view('vGame');
-  chat.innerHTML='';for(const e of s.log){add(e.kind,e.text,e.who)}renderSide(s.state);
-  const proto=location.protocol=='https:'?'wss':'ws';ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/$/,'')}/ws/${id}`);
+async function renderLog(id){const s=await (await fetch('api/scenes/'+encodeURIComponent(id))).json();scene=s;$('title').textContent=s.title+' · '+s.rule_mode;
+  chat.innerHTML='';segs={};let last=-1;for(const e of s.log){if(e.kind=='player'&&e.turn!=last){addPlayer(e.text,e.turn);last=e.turn}else add(e.kind,e.text,e.who)}renderSide(s.state);return s}
+function addPlayer(text,turn){const d=add('player',text);if(turn){const b=document.createElement('button');b.className='rw';b.textContent='↶';b.title='Откатить к началу этого хода';
+  b.onclick=()=>{if(!busy&&confirm('Откатить игру к началу хода '+turn+'?')){ws.send(JSON.stringify({type:'rewind',turn}));setBusy(true)}};d.prepend(b)}return d}
+async function openScene(id){view('vGame');await renderLog(id);
+  const proto=location.protocol=='https:'?'wss':'ws';ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/$/,'')}/ws/${encodeURIComponent(id)}`);
   ws.onmessage=ev=>onMsg(JSON.parse(ev.data));ws.onclose=()=>{if(scene)setBusy(false)}}
 function onMsg(m){
   if(m.type=='hello')return renderSide(m.state);
-  if(m.type=='player')return add('player',m.text);
-  if(m.type=='continue')return add('player','⏵ Продолжить');
+  if(m.type=='player')return addPlayer(m.text,m.turn);
+  if(m.type=='continue')return addPlayer('⏵ Продолжить',m.turn);
+  if(m.type=='reload'){renderLog(scene.id).then(()=>setBusy(false));return}
+  if(m.type=='memory'){const d=add('mem',m.text);if(m.state)renderSide(m.state);return}
   if(m.type=='chunk'){let d=segs[m.id];if(!d){d=segs[m.id]=add(m.kind,'',m.who,m.id);d._t=''}d._t+=m.delta;setText(d,m.kind,d._t,m.who);chat.scrollTop=chat.scrollHeight;return}
   if(m.type=='retract'){segs[m.id]?.remove();delete segs[m.id];return}
   if(m.type=='replace'){const d=segs[m.id];if(!d)return;const ref=d;for(const s of m.segments){const n=document.createElement('div');setText(n,s.kind,s.text,s.who);ref.before(n)}d.remove();delete segs[m.id];return}
@@ -108,6 +115,9 @@ function onMsg(m){
   if(m.type=='error'){add('system','Ошибка: '+m.text);setBusy(false)}}
 function setBusy(b){busy=b;$('bSend').disabled=b;$('bCont').disabled=b}
 function send(){const t=$('inp').value.trim();if(!t||busy||!ws)return;ws.send(JSON.stringify({type:'input',text:t}));$('inp').value='';setBusy(true)}
+function regen(){if(busy||!ws)return;ws.send(JSON.stringify({type:'regenerate'}));setBusy(true)}
+async function saveSettings(){const b={length_mult:+$('sMult').value,max_speaks:+$('sMax').value||null};
+  await fetch('api/scenes/'+encodeURIComponent(scene.id)+'/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});$('sMultV').textContent=b.length_mult}
 function cont(){if(busy||!ws)return;ws.send(JSON.stringify({type:'continue'}));setBusy(true)}
 function sysCmd(){const c=prompt('Команда Системы','статус');if(c){$('inp').value='Система, '+c;send()}}
 $('inp').addEventListener('keydown',e=>{if(e.key=='Enter'&&!e.shiftKey){e.preventDefault();send()}});
@@ -117,6 +127,9 @@ function renderSide(st){if(!st)return;const p=st.characters[st.player_id];let h=
   h+=ch(p)+`EXP ${p.exp}/${p.exp_next}${bar(p.exp,p.exp_next,'#cb5')}<div class="hint">${Object.entries(p.attrs).map(([k,v])=>k+' '+v).join(' · ')}</div>`;
   h+=`<h3>Навыки</h3>${Object.entries(p.skills).map(([k,v])=>esc(k)+' '+v).join('<br>')||'—'}<h3>Инвентарь</h3>${p.inventory.map(i=>esc(i.name)+(i.qty>1?' ×'+i.qty:'')).join('<br>')||'—'}`;
   h+='<h3>В сцене</h3>'+st.present.filter(i=>i!=st.player_id).map(i=>{const c=st.characters[i];return esc(c.name)+` <span class="hint">HP ${c.hp}/${c.max_hp}</span>`}).join('<br>');
+  const se=st.settings||{length_mult:1};h+=`<h3>Память</h3><div class="hint">сводок ${st.summaries||0} · фактов ${st.facts||0} · архив до хода ${st.archived_turn||0}</div>`;
+  h+=`<h3>Настройки</h3><label>Длина ходов ×<span id="sMultV">${se.length_mult}</span></label><input id="sMult" type="range" min="0.5" max="2" step="0.25" value="${se.length_mult}" onchange="saveSettings()">
+  <label>Макс. реплик NPC за ход (пусто = авто)</label><input id="sMax" type="number" min="1" max="10" value="${se.max_speaks||''}" onchange="saveSettings()">`;
   side.innerHTML=h}
 view('vList');loadList();
 </script></body></html>
