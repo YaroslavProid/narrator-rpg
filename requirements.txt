@@ -5,3 +5,7 @@ pydantic>=2
 python-multipart
 pytest
 websockets
+chromadb
+onnxruntime
+tokenizers
+numpy

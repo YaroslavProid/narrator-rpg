@@ -14,7 +14,13 @@ state = {}
 
 @asynccontextmanager
 async def lifespan(app):
-    state["llm"] = LLM(); state["engine"] = TurnEngine(state["llm"]); state["scenes"] = {}
+    mem = None
+    if config.MEMORY and (config.EMBED_DIR / "model_quantized.onnx").exists():
+        from .memory import Embedder, VectorStore
+        mem = VectorStore(Embedder())
+    elif config.MEMORY:
+        print("WARNING: embedding model missing in", config.EMBED_DIR, "- vector memory disabled")
+    state["llm"] = LLM(); state["engine"] = TurnEngine(state["llm"], mem); state["scenes"] = {}
     yield
     await state["llm"].close()
 
@@ -95,6 +101,20 @@ async def scene_get(sid: str):
             "log": [e.model_dump() for e in sc.log], "state": state["engine"].state(sc), "stats": sc.stats[-20:]}
 
 
+class SettingsIn(BaseModel):
+    length_mult: float = 1.0
+    max_speaks: int | None = None
+
+
+@app.post("/api/scenes/{sid}/settings")
+async def scene_settings(sid: str, body: SettingsIn):
+    sc = get_scene(sid)
+    sc.settings.length_mult = max(0.5, min(2.0, body.length_mult))
+    sc.settings.max_speaks = body.max_speaks if body.max_speaks and body.max_speaks > 0 else None
+    store.save_scene(sc)
+    return sc.settings.model_dump()
+
+
 @app.post("/api/cards/parse")
 async def card_parse(file: UploadFile = File(...)):
     try:
@@ -122,10 +142,21 @@ async def ws(websocket: WebSocket, sid: str):
         while True:
             msg = json.loads(await websocket.receive_text())
             try:
-                if msg.get("type") == "input" and (msg.get("text") or "").strip():
+                t = msg.get("type")
+                if t == "input" and (msg.get("text") or "").strip():
                     await eng.handle(sc, msg["text"].strip(), emit)
-                elif msg.get("type") == "continue":
+                elif t == "continue":
                     await eng.handle(sc, None, emit)
+                elif t == "regenerate":
+                    if await eng.regenerate(sc, emit) is None:
+                        await emit({"type": "error", "text": "нечего переписывать"})
+                elif t == "rewind":
+                    ok = await eng.rewind_locked(sc, int(msg.get("turn", 0)))
+                    await emit({"type": "reload"} if ok else {"type": "error", "text": "нет точки отката"})
+                    continue
+                else:
+                    continue
+                asyncio.create_task(eng.background(sc, emit))
             except WebSocketDisconnect:
                 raise
             except Exception as e:
