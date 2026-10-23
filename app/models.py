@@ -5,10 +5,20 @@ from pydantic import BaseModel, Field
 ATTRS = ["Сила", "Ловкость", "Телосложение", "Интеллект", "Мудрость", "Харизма"]
 
 
+class Condition(BaseModel):
+    name: str
+    turns_left: int = 1
+    potency: int = 0          # e.g. bleed damage per turn
+
+
 class Item(BaseModel):
     name: str
     qty: int = 1
-    kind: str = "предмет"
+    kind: str = "предмет"     # оружие | броня | расходник | предмет
+    damage: str = ""          # "1d8", "1d4+1" for weapons
+    armor: int = 0            # AC bonus when equipped
+    equipped: bool = False
+    slot: str = ""            # рука | тело | …
 
 
 class Character(BaseModel):
@@ -16,8 +26,8 @@ class Character(BaseModel):
     name: str
     description: str = ""
     personality: str = ""
-    speech: str = ""          # manner of speech / example lines
-    secrets: str = ""         # private notes, only shown to the character itself
+    speech: str = ""
+    secrets: str = ""
     aliases: list[str] = []
     is_player: bool = False
     level: int = 1
@@ -28,9 +38,25 @@ class Character(BaseModel):
     exp: int = 0
     exp_next: int = 100
     attr_points: int = 0
+    skill_points: int = 0
     attrs: dict[str, int] = Field(default_factory=lambda: {a: 10 for a in ATTRS})
     skills: dict[str, int] = {}
     inventory: list[Item] = []
+    conditions: list[Condition] = []
+    last_active_turn: int = 0   # last turn spoken / mentioned / acted
+
+
+class Combatant(BaseModel):
+    id: str
+    initiative: int = 0
+    acted: bool = False
+
+
+class Combat(BaseModel):
+    active: bool = False
+    round: int = 0
+    order: list[Combatant] = []
+    current: int = 0
 
 
 class Event(BaseModel):
@@ -57,8 +83,9 @@ class Fact(BaseModel):
 
 
 class SceneSettings(BaseModel):
-    length_mult: float = 1.0          # scales the dynamic per-turn budget
-    max_speaks: int | None = None     # optional user ceiling on character lines per turn
+    length_mult: float = 1.0
+    max_speaks: int | None = None
+    inactive_leave: int | None = None   # None → config.INACTIVE_LEAVE
 
 
 class Scene(BaseModel):
@@ -69,24 +96,25 @@ class Scene(BaseModel):
     player_id: str
     characters: dict[str, Character] = {}
     present: list[str] = []
-    initial_present: list[str] = []   # who was in the fixed block at creation
-    system_prompt: str = ""           # rendered once at creation; byte-stable for the cache
-    turns: list[dict] = []            # append-only raw prompt history [{role, content}]
+    initial_present: list[str] = []
+    system_prompt: str = ""
+    turns: list[dict] = []
     log: list[Event] = []
     turn: int = 0
     turn_exp: int = 0
     rng_seed: int = 0
     rng_calls: int = 0
-    stats: list[dict] = []            # per-turn latency/cache metrics
+    stats: list[dict] = []
     settings: SceneSettings = SceneSettings()
-    summaries: list[Summary] = []     # layered history (layer 1 = archived blocks, 2+ = compressed)
+    summaries: list[Summary] = []
     facts: list[Fact] = []
-    archived_upto: int = 0            # index into turns: everything before is archived (summarised)
-    archived_turn: int = 0            # game turns < this are archived
-    memory_injected: list[str] = []   # chroma ids already shown in the unarchived window
-    snapshots: list[dict] = []        # per-turn restore points for rewind/regenerate
+    archived_upto: int = 0
+    archived_turn: int = 0
+    memory_injected: list[str] = []
+    snapshots: list[dict] = []
+    combat: Combat = Combat()
     regen: int = 0
-    version: int = 2
+    version: int = 3
 
     @property
     def player(self) -> Character:

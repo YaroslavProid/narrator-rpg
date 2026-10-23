@@ -153,9 +153,9 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
         c.exp_next = int(c.exp_next * 1.5)
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
-        c.attr_points += 2
-        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов "
-                    f"(«Система, распредели Сила +1»).")
+        c.attr_points += 2; c.skill_points += 1
+        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 навык "
+                    f"(«Система, распредели Сила +1» / «Система, навык Скрытность +1»).")
 
 
 def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], list[str]]:
@@ -190,7 +190,9 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
             rej.append(f"предмет «{a}» отклонён"); continue
         ex = next((i for i in c.inventory if i.name.lower() == a.lower()), None)
         if ex: ex.qty += 1
-        else: c.inventory.append(Item(name=a))
+        else:
+            from . import combat as C
+            c.inventory.append(C.ensure_item_stats(Item(name=a)))
         msgs.append(f"{c.name}: получен предмет «{a}»")
     if len(adds) > LIMITS["items_per_event"]:
         rej.append("лишние предметы отклонены")
@@ -205,19 +207,93 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
     return msgs, rej
 
 
+# ---------------- inventory helpers ----------------
+def find_item(c: Character, name: str) -> Item | None:
+    n = norm(name)
+    return next((i for i in c.inventory if norm(i.name) == n), None) or \
+           next((i for i in c.inventory if n in norm(i.name)), None)
+
+
+def equip_item(c: Character, name: str) -> str:
+    from . import combat as C
+    it = find_item(c, name)
+    if not it:
+        return f"⟦ СИСТЕМА ⟧ Нет предмета «{name}»."
+    C.ensure_item_stats(it)
+    if it.kind not in ("оружие", "броня"):
+        return f"⟦ СИСТЕМА ⟧ «{it.name}» нельзя экипировать."
+    for other in c.inventory:
+        if other.equipped and other.slot == (it.slot or ("рука" if it.kind == "оружие" else "тело")):
+            other.equipped = False
+    it.equipped = True
+    extra = f", урон {it.damage}" if it.damage else (f", броня +{it.armor}" if it.armor else "")
+    return f"⟦ СИСТЕМА ⟧ Экипировано: {it.name}{extra}."
+
+
+def unequip_item(c: Character, name: str) -> str:
+    it = find_item(c, name)
+    if not it or not it.equipped:
+        return f"⟦ СИСТЕМА ⟧ «{name}» не экипирован."
+    it.equipped = False
+    return f"⟦ СИСТЕМА ⟧ Снято: {it.name}."
+
+
+def use_item(scene: Scene, c: Character, name: str) -> str:
+    it = find_item(c, name)
+    if not it:
+        return f"⟦ СИСТЕМА ⟧ Нет предмета «{name}»."
+    n = it.name.lower()
+    msgs = []
+    if any(k in n for k in ("зелье", "лечение", "бандаж", "аптеч", "Potion", "heal")):
+        heal = min(10, c.max_hp - c.hp)
+        c.hp += heal; msgs.append(f"{c.name}: +{heal} HP ({c.hp}/{c.max_hp})")
+    elif any(k in n for k in ("мана", "эссенц")):
+        gain = min(8, c.max_mp - c.mp)
+        c.mp += gain; msgs.append(f"{c.name}: +{gain} MP")
+    else:
+        return f"⟦ СИСТЕМА ⟧ «{it.name}» нельзя использовать напрямую (опишите действие рассказчику)."
+    it.qty -= 1
+    if it.qty <= 0:
+        c.inventory.remove(it)
+    return "⟦ СИСТЕМА ⟧ " + "; ".join(msgs)
+
+
+def give_item(scene: Scene, giver: Character, name: str, receiver: Character) -> str:
+    it = find_item(giver, name)
+    if not it:
+        return f"⟦ СИСТЕМА ⟧ У {giver.name} нет «{name}»."
+    it.qty -= 1; it.equipped = False
+    got = Item(name=it.name, kind=it.kind, damage=it.damage, armor=it.armor, slot=it.slot)
+    if it.qty <= 0:
+        giver.inventory.remove(it)
+    ex = next((i for i in receiver.inventory if i.name == got.name), None)
+    if ex: ex.qty += 1
+    else: receiver.inventory.append(got)
+    return f"⟦ СИСТЕМА ⟧ {giver.name} отдаёт «{got.name}» → {receiver.name}."
+
+
 # ---------------- 'Система, ...' commands ----------------
 def parse_system_command(text: str) -> tuple[str, str] | None:
     t = (text or "").strip().lower().lstrip("*\"«„“(_[ ")
-    rest = None
-    for p in ("система", "system", "/"):
-        if t.startswith(p):
-            rest = t[len(p):]; break
+    rest = None; p = ""
+    for pref in ("система", "system", "/"):
+        if t.startswith(pref):
+            rest = t[len(pref):]; p = pref; break
     if rest is None or (p != "/" and rest and rest[0] not in " ,.:;!?-—*»\""):
         return None
     r = re.sub(r"[,:.!?*»\"]", " ", rest).strip()
     if r == "" or any(k in r for k in ("стат", "status", "характ", "stats", "показат")): return "status", r
-    if any(k in r for k in ("навык", "скил", "skill", "умени", "способн")): return "skills", r
+    if any(k in r for k in ("навык", "скил", "skill", "умени", "способн")) and "распредел" not in r and "влож" not in r:
+        if re.search(r"\+\s*\d|\b\+\b", r) or "уровень" in r:
+            return "train", r
+        return "skills", r
     if any(k in r for k in ("инвент", "invent", "сумк", "предмет", "вещи")): return "inventory", r
+    if any(k in r for k in ("экип", "надень", "надет", "equip", "вооруж")): return "equip", r
+    if any(k in r for k in ("сними", "снят", "unequip")): return "unequip", r
+    if any(k in r for k in ("используй", "выпей", "примени", "use")): return "use", r
+    if any(k in r for k in ("дай", "отдай", "передай", "give")): return "give", r
+    if any(k in r for k in ("бой", "combat", "иниц")): return "combat", r
+    if any(k in r for k in ("состоян", "эффект", "condition", "бафф", "дебафф")): return "conditions", r
     if any(k in r for k in ("распредел", "вклад", "очк", "assign")): return "assign", r
     return "help", r
 
@@ -228,21 +304,30 @@ def _bar(cur, mx, n=10):
 
 
 def status_text(c: Character) -> str:
+    from . import combat as C
     lines = [f"#### {c.name} — уровень {c.level}",
              f"❤️ HP {c.hp}/{c.max_hp} {_bar(c.hp, c.max_hp)}", f"🔷 MP {c.mp}/{c.max_mp} {_bar(c.mp, c.max_mp)}",
-             f"✨ EXP {c.exp}/{c.exp_next}",
+             f"✨ EXP {c.exp}/{c.exp_next} · КБ {C.ac(c)}",
              " · ".join(f"{a} {v} ({mod(v):+d})" for a, v in c.attrs.items())]
-    if c.attr_points:
-        lines.append(f"Свободные очки атрибутов: {c.attr_points}")
+    if c.conditions:
+        lines.append("Состояния: " + ", ".join(f"{x.name}({x.turns_left})" for x in c.conditions))
+    if c.attr_points or c.skill_points:
+        lines.append(f"Очки: атрибуты {c.attr_points}, навыки {c.skill_points}")
+    eq = [i for i in c.inventory if i.equipped]
+    if eq:
+        lines.append("Экипировка: " + ", ".join(i.name for i in eq))
     return "\n".join(lines)
 
 
 def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
+    from . import combat as C
     p = scene.player
     if cmd == "status":
         others = [scene.characters[i] for i in scene.present if i != p.id]
         s = "### ⟦ СИСТЕМА · СТАТУС ⟧\n" + status_text(p)
         s += f"\nРежим правил: {scene.rule_mode}. Ход: {scene.turn}."
+        if scene.combat.active:
+            s += f" Бой: раунд {scene.combat.round}."
         if others:
             s += "\nРядом: " + ", ".join(f"{o.name} (HP {o.hp}/{o.max_hp})" for o in others)
         return s
@@ -254,8 +339,36 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
     if cmd == "inventory":
         if not p.inventory:
             return "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\nПусто."
-        return "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\n" + "\n".join(
-            f"- {i.name}" + (f" ×{i.qty}" if i.qty > 1 else "") for i in p.inventory)
+        lines = []
+        for i in p.inventory:
+            mark = " [экип.]" if i.equipped else ""
+            extra = f", урон {i.damage}" if i.damage else (f", броня +{i.armor}" if i.armor else "")
+            lines.append(f"- {i.name}" + (f" ×{i.qty}" if i.qty > 1 else "") + mark + extra)
+        return "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\n" + "\n".join(lines)
+    if cmd == "equip":
+        name = re.sub(r"экип\w*|надень|надет\w*|equip|вооруж\w*", "", rest).strip()
+        return equip_item(p, name) if name else "⟦ СИСТЕМА ⟧ Укажите предмет: «Система, экипируй Короткий меч»."
+    if cmd == "unequip":
+        name = re.sub(r"сними|снят\w*|unequip", "", rest).strip()
+        return unequip_item(p, name) if name else "⟦ СИСТЕМА ⟧ Укажите предмет."
+    if cmd == "use":
+        name = re.sub(r"используй|выпей|примени|use", "", rest).strip()
+        return use_item(scene, p, name) if name else "⟦ СИСТЕМА ⟧ Укажите предмет."
+    if cmd == "give":
+        m = re.search(r"(?:дай|отдай|передай|give)\s+(.+?)\s+(?:персонажу\s+|герою\s+|npc\s+)?([А-Яа-яЁёA-Za-z][\w\- ]+)$", rest)
+        if not m:
+            return "⟦ СИСТЕМА ⟧ Формат: «Система, дай Нож Сильфе»."
+        recv = resolve_character(scene, m.group(2).strip())
+        if not recv:
+            return f"⟦ СИСТЕМА ⟧ Нет персонажа «{m.group(2)}»."
+        return give_item(scene, p, m.group(1).strip(), recv)
+    if cmd == "combat":
+        return C.combat_status(scene)
+    if cmd == "conditions":
+        if not p.conditions:
+            return "### ⟦ СИСТЕМА · СОСТОЯНИЯ ⟧\nНет активных состояний."
+        return "### ⟦ СИСТЕМА · СОСТОЯНИЯ ⟧\n" + "\n".join(
+            f"- {x.name}: ещё {x.turns_left} ход." + (f", сила {x.potency}" if x.potency else "") for x in p.conditions)
     if cmd == "assign":
         m = re.search(r"([а-яёa-z]+)\s*\+?\s*(\d+)?", re.sub(r"распредел\w*|очк\w*|вложи|assign", "", rest))
         attr = resolve_attr(m.group(1)) if m else None
@@ -266,14 +379,32 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             return f"⟦ СИСТЕМА ⟧ Недостаточно очков: есть {p.attr_points}."
         p.attr_points -= n; p.attrs[attr] += n
         return f"⟦ СИСТЕМА ⟧ {attr} {p.attrs[attr] - n}→{p.attrs[attr]}. Осталось очков: {p.attr_points}."
-    return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n- «Система, статус» — показатели\n- «Система, навыки»\n- «Система, инвентарь»\n"
-            "- «Система, распредели Сила +1» — потратить очки атрибутов\n- «Система, помощь»\n"
+    if cmd == "train":
+        m = re.search(r"([а-яёa-z ]+?)\s*\+?\s*(\d+)?$", re.sub(r"навык\w*|скил\w*|skill|уровен\w*", "", rest).strip())
+        skill = resolve_skill(m.group(1)) if m else None
+        n = int(m.group(2) or 1) if m else 1
+        if not skill:
+            return "⟦ СИСТЕМА ⟧ Укажите навык из списка."
+        if n > p.skill_points:
+            return f"⟦ СИСТЕМА ⟧ Недостаточно очков навыков: есть {p.skill_points}."
+        p.skill_points -= n; p.skills[skill] = p.skills.get(skill, 0) + n
+        return f"⟦ СИСТЕМА ⟧ {skill} → {p.skills[skill]}. Осталось очков навыков: {p.skill_points}."
+    return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
+            "- «Система, статус» / навыки / инвентарь / состояния / бой\n"
+            "- «Система, экипируй Короткий меч» / «сними Щит»\n"
+            "- «Система, используй Зелье лечения» / «дай Нож Сильфе»\n"
+            "- «Система, распредели Сила +1» / «навык Скрытность +1»\n"
+            "- «Система, помощь»\n"
             "Кнопка «Продолжить» — мир действует без вашего хода.")
 
 
 def state_line(scene: Scene) -> str:
+    from . import combat as C
     p = scene.player
     present = [scene.characters[i].name for i in scene.present if i != p.id]
-    inv = ", ".join(i.name for i in p.inventory[:8]) or "пусто"
+    inv = ", ".join(("*" + i.name + "*" if i.equipped else i.name) for i in p.inventory[:8]) or "пусто"
+    cond = (", ".join(x.name for x in p.conditions)) or "нет"
+    combat = f" Бой р.{scene.combat.round}." if scene.combat.active else ""
     return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, MP {p.mp}/{p.max_mp}, "
-            f"EXP {p.exp}/{p.exp_next}. Инвентарь: {inv}. В сцене: {', '.join(present) or 'никого'}.")
+            f"EXP {p.exp}/{p.exp_next}, КБ {C.ac(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat} "
+            f"В сцене: {', '.join(present) or 'никого'}.")
