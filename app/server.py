@@ -40,6 +40,8 @@ def get_scene(sid):
 class PlayerIn(BaseModel):
     name: str
     description: str = ""
+    personality: str = ""
+    speech: str = ""
     attrs: dict[str, int] = {}
     skills: dict[str, int] = {}
     inventory: list[str] = []
@@ -61,6 +63,22 @@ class SceneIn(BaseModel):
     rule_mode: str = "d20"
     player: PlayerIn
     npcs: list[NpcIn] = []
+    seed: int | None = None
+
+
+class NpcBriefIn(BaseModel):
+    name: str = ""
+    brief: str = ""
+
+
+class GenerateIn(BaseModel):
+    title: str = ""
+    premise: str = ""
+    rule_mode: str = "d20"
+    player_name: str = ""
+    player_brief: str = ""
+    npcs: list[NpcBriefIn] = []
+    npc_count: int = 0
     seed: int | None = None
 
 
@@ -92,6 +110,33 @@ async def new_scene(body: SceneIn):
     sc = create_scene(body.title, body.setting, body.player.model_dump(), npcs, body.rule_mode, body.seed)
     state["scenes"][sc.id] = sc
     return {"id": sc.id}
+
+
+@app.post("/api/scenes/generate")
+async def generate_scene_draft(body: GenerateIn):
+    """One-shot LLM draft: world, PC sheet+kit, NPCs. Preview before create."""
+    if body.rule_mode not in ("d20", "система"):
+        raise HTTPException(400, "rule_mode: d20 | система")
+    npc_count = max(0, min(8, int(body.npc_count or 0)))
+    briefs = [{"name": n.name, "brief": n.brief} for n in body.npcs if (n.name or n.brief).strip()]
+    if not briefs and npc_count == 0:
+        npc_count = 2
+    from .generate import generate_scene
+    try:
+        draft = await generate_scene(
+            state["llm"],
+            title=body.title.strip(),
+            premise=body.premise.strip(),
+            rule_mode=body.rule_mode,
+            player_name=body.player_name.strip(),
+            player_brief=body.player_brief.strip(),
+            npc_briefs=briefs,
+            npc_count=npc_count,
+            seed=body.seed if body.seed is not None else -1,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"генерация: {type(e).__name__}: {e}")
+    return draft
 
 
 @app.get("/api/scenes/{sid}")

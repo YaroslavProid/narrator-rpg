@@ -441,39 +441,49 @@ footer textarea {
     <h2>Новая сцена</h2>
     <button class="ghost" onclick="showList()">Отмена</button>
   </div>
-  <div class="card">
-    <div class="card-title">Мир</div>
-    <label>Название</label>
-    <input id="nTitle" value="Таверна «Серый Брод»">
-    <label>Сеттинг / лор</label>
-    <textarea id="nSetting" rows="4">Мрачное фэнтези. Пограничный городок у болот, дождь, долги и контрабанда.</textarea>
-    <label>Режим правил (выбирается один раз)</label>
+  <div class="card" id="createForm">
+    <div class="card-title">Замысел</div>
+    <label>Название (можно оставить — ИИ уточнит)</label>
+    <input id="nTitle" value="Таверна «Серый Брод»" placeholder="Краткий заголовок">
+    <label>Зерно мира / премис</label>
+    <textarea id="nPremise" rows="3" placeholder="Тон, место, крючок…">Мрачное фэнтези. Пограничный городок у болот, дождь, долги и контрабанда.</textarea>
+    <label>Режим правил (один раз при создании)</label>
     <select id="nMode">
       <option value="d20">d20 — проверки с бросками</option>
       <option value="система">Система — только статы, без бросков</option>
     </select>
   </div>
-  <div class="card">
+  <div class="card" id="createPc">
     <div class="card-title">Ваш персонаж</div>
+    <p class="hint">Атрибуты, навыки и стартовый набор подберёт ИИ под мир и режим правил.</p>
     <label>Имя</label>
-    <input id="pName" value="Ярен">
-    <label>Описание</label>
-    <textarea id="pDesc" rows="3">Бывший наёмник, ищет пропавший караван брата.</textarea>
-    <label>Атрибуты (Сила Ловкость Телосложение Интеллект Мудрость Харизма)</label>
-    <input id="pAttrs" value="12 14 12 10 12 11">
-    <label>Навыки (Навык=уровень, через запятую)</label>
-    <input id="pSkills" value="Скрытность=2, Ближний бой=2, Восприятие=1">
-    <label>Инвентарь (через запятую)</label>
-    <input id="pInv" value="Короткий меч, Нож, Кошель с 12 серебряными">
+    <input id="pName" value="Ярен" placeholder="Имя героя">
+    <label>Кратко о нём</label>
+    <textarea id="pBrief" rows="2" placeholder="Роль, цель, пара черт…">Бывший наёмник, ищет пропавший караван брата.</textarea>
   </div>
-  <div class="card">
+  <div class="card" id="createNpcs">
     <div class="card-title">Стартовые NPC</div>
-    <p class="hint">Текст, JSON-карточка или файл PNG/JSON (SillyTavern V2/V3).</p>
+    <p class="hint">Имя + пара слов — остальное допишет ИИ. Или укажите число — сгенерирует само.</p>
     <div id="npcs"></div>
-    <button onclick="addNpc()">+ NPC</button>
+    <div class="row" style="margin-top:.5rem;gap:.5rem;flex-wrap:wrap">
+      <button type="button" onclick="addNpc()">+ NPC</button>
+      <label style="display:flex;align-items:center;gap:.4rem;margin:0;flex:1;min-width:10rem">
+        <span style="white-space:nowrap;font-size:.85rem;color:var(--mu)">Или сгенерировать</span>
+        <input id="nNpcCount" type="number" min="0" max="8" value="0" style="width:3.5rem;margin:0" title="0 = только вручную добавленные">
+        <span style="font-size:.85rem;color:var(--mu)">NPC</span>
+      </label>
+    </div>
   </div>
-  <div class="row actions">
-    <button class="pri" onclick="createScene()" style="flex:1">Создать сцену</button>
+  <div class="row actions" id="createActions">
+    <button class="pri" id="bGen" onclick="generateScene()" style="flex:1">Сгенерировать с ИИ</button>
+  </div>
+  <div class="card" id="preview" style="display:none">
+    <div class="card-title">Превью сцены</div>
+    <div id="previewBody"></div>
+    <div class="row actions" style="margin-top:.75rem">
+      <button class="ghost" onclick="backToForm()" style="flex:1">Изменить замысел</button>
+      <button class="pri" id="bConfirm" onclick="confirmScene()" style="flex:1">Начать сцену</button>
+    </div>
   </div>
 </div>
 
@@ -539,98 +549,125 @@ function showList(){
   $('title').textContent='Narrator RPG';
   view('vList'); loadList();
 }
+let sceneDraft=null;
+
 function showNew(){
   view('vNew');
   $('title').textContent='Новая сцена';
+  sceneDraft=null;
+  $('preview').style.display='none';
+  $('createForm').style.display='';
+  $('createPc').style.display='';
+  $('createNpcs').style.display='';
+  $('createActions').style.display='flex';
   if(!$('npcs').children.length){
-    addNpc('Сильфа','Хозяйка таверны, острая на язык, торгует слухами.');
-    addNpc('Борек','Хмурый наёмник у камина, что-то скрывает.');
+    addNpc('Сильфа','Хозяйка таверны, торгует слухами');
+    addNpc('Борек','Хмурый наёмник у камина');
   }
 }
 function addNpc(n='',d=''){
   const el=document.createElement('div'); el.className='npc';
   el.innerHTML=`<input class="nn" placeholder="Имя" value="${esc(n)}">
-    <label>Описание или карточка</label>
-    <textarea class="nd" rows="3">${esc(d)}</textarea>
-    <div class="row" style="margin-top:.5rem">
-      <input type="file" class="nf" accept=".png,.json,.txt" style="width:auto;flex:1;font-size:.8rem">
+    <label>Кратко (роль, черта)</label>
+    <textarea class="nd" rows="2" placeholder="Пара слов…">${esc(d)}</textarea>
+    <div class="row" style="margin-top:.35rem">
       <button class="ghost icon" onclick="this.closest('.npc').remove()" title="Удалить">✕</button>
     </div>`;
-  el.querySelector('.nf').onchange=async e=>{
-    const f=e.target.files[0]; if(!f) return;
-    const fd=new FormData(); fd.append('file',f);
-    const r=await fetch('api/cards/parse',{method:'POST',body:fd});
-    const c=await r.json(); if(!r.ok) return alert(c.detail);
-    el.querySelector('.nn').value=c.name;
-    el.querySelector('.nd').value=[c.description,c.personality&&('Характер: '+c.personality)].filter(Boolean).join('\n');
-    el.dataset.speech=c.speech||'';
-  };
   $('npcs').appendChild(el);
 }
-async function createScene(){
-  const names=['Сила','Ловкость','Телосложение','Интеллект','Мудрость','Харизма'];
-  const av=$('pAttrs').value.trim().split(/\s+/).map(Number), attrs={};
-  names.forEach((n,i)=>{ if(av[i]) attrs[n]=av[i]; });
-  const skills={};
-  $('pSkills').value.split(',').forEach(x=>{ const[k,v]=x.split('='); if(k&&k.trim()) skills[k.trim()]=+v||1; });
-  const npcs=[...document.querySelectorAll('.npc')].map(e=>{
-    const d=e.querySelector('.nd').value.trim();
-    return d.startsWith('{')
-      ? {name:e.querySelector('.nn').value, card:d}
-      : {name:e.querySelector('.nn').value.trim(), description:d, speech:e.dataset.speech||''};
-  }).filter(n=>n.name||n.card);
-  const body={
-    title:$('nTitle').value, setting:$('nSetting').value, rule_mode:$('nMode').value,
-    player:{name:$('pName').value, description:$('pDesc').value, attrs, skills,
-            inventory:$('pInv').value.split(',').map(s=>s.trim()).filter(Boolean)},
-    npcs
-  };
-  const r=await fetch('api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const j=await r.json();
-  if(!r.ok) return alert(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail));
-  openScene(j.id);
+function collectBriefs(){
+  return [...document.querySelectorAll('.npc')].map(e=>({
+    name:e.querySelector('.nn').value.trim(),
+    brief:e.querySelector('.nd').value.trim()
+  })).filter(n=>n.name||n.brief);
+}
+function backToForm(){
+  sceneDraft=null;
+  $('preview').style.display='none';
+  $('createForm').style.display='';
+  $('createPc').style.display='';
+  $('createNpcs').style.display='';
+  $('createActions').style.display='flex';
+}
+function renderPreview(d){
+  const p=d.player||{};
+  const attrs=Object.entries(p.attrs||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ');
+  const skills=Object.entries(p.skills||{}).map(([k,v])=>`${esc(k)}=${v}`).join(', ')||'—';
+  const inv=(p.inventory||[]).map(esc).join(', ')||'—';
+  let h=`<div class="hint" style="margin-bottom:.6rem">Проверьте и нажмите «Начать сцену». Атрибуты задал ИИ — править вручную не нужно.</div>`;
+  h+=`<b>${esc(d.title)}</b>`;
+  h+=`<div class="meta" style="margin:.35rem 0"><span class="badge ac">${esc($('nMode').value)}</span></div>`;
+  h+=`<div style="white-space:pre-wrap;font-size:.9rem;line-height:1.45;margin:.5rem 0 1rem;color:var(--tx)">${esc(d.setting)}</div>`;
+  h+=`<div class="card-title">Игрок: ${esc(p.name)}</div>`;
+  h+=`<div style="font-size:.9rem;margin-bottom:.35rem">${esc(p.description||'')}</div>`;
+  if(p.personality) h+=`<div class="hint">Характер: ${esc(p.personality)}</div>`;
+  h+=`<div class="attrs" style="margin:.4rem 0">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
+  h+=`<div class="hint">Навыки: ${skills}</div>`;
+  h+=`<div class="hint" style="margin-bottom:.8rem">Набор: ${inv}</div>`;
+  h+=`<div class="card-title">NPC (${(d.npcs||[]).length})</div>`;
+  for(const n of (d.npcs||[])){
+    h+=`<div class="npc" style="margin:.4rem 0;padding:.55rem .65rem;border:1px solid var(--bd);border-radius:.5rem">`;
+    h+=`<b>${esc(n.name)}</b>`;
+    h+=`<div style="font-size:.88rem;margin-top:.25rem">${esc(n.description||'')}</div>`;
+    if(n.personality) h+=`<div class="hint">Характер: ${esc(n.personality)}</div>`;
+    if(n.secrets) h+=`<div class="hint">Тайна: ${esc(n.secrets)}</div>`;
+    h+=`</div>`;
+  }
+  if(d._stats) h+=`<div class="hint" style="margin-top:.6rem">Генерация: ${d._stats.wall_s||'?'}с · ${d._stats.predicted_n||'?'} ток.</div>`;
+  $('previewBody').innerHTML=h;
+}
+async function generateScene(){
+  const b=$('bGen'); b.disabled=true; b.textContent='Генерация…';
+  try{
+    const body={
+      title:$('nTitle').value.trim(),
+      premise:$('nPremise').value.trim(),
+      rule_mode:$('nMode').value,
+      player_name:$('pName').value.trim(),
+      player_brief:$('pBrief').value.trim(),
+      npcs:collectBriefs(),
+      npc_count:+($('nNpcCount').value||0)
+    };
+    const r=await fetch('api/scenes/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
+    sceneDraft=j;
+    $('createForm').style.display='none';
+    $('createPc').style.display='none';
+    $('createNpcs').style.display='none';
+    $('createActions').style.display='none';
+    $('preview').style.display='';
+    renderPreview(j);
+  }catch(e){ alert('Генерация не удалась: '+e.message); }
+  finally{ b.disabled=false; b.textContent='Сгенерировать с ИИ'; }
+}
+async function confirmScene(){
+  if(!sceneDraft) return;
+  const b=$('bConfirm'); b.disabled=true; b.textContent='Создание…';
+  try{
+    const d=sceneDraft;
+    const body={
+      title:d.title, setting:d.setting, rule_mode:$('nMode').value,
+      player:{
+        name:d.player.name, description:d.player.description,
+        personality:d.player.personality||'', speech:d.player.speech||'',
+        attrs:d.player.attrs||{}, skills:d.player.skills||{},
+        inventory:d.player.inventory||[]
+      },
+      npcs:(d.npcs||[]).map(n=>({
+        name:n.name, description:n.description||'',
+        personality:n.personality||'', speech:n.speech||'',
+        secrets:n.secrets||'', present:n.present!==false
+      }))
+    };
+    const r=await fetch('api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
+    sceneDraft=null; openScene(j.id);
+  }catch(e){ alert('Не удалось создать: '+e.message); }
+  finally{ b.disabled=false; b.textContent='Начать сцену'; }
 }
 
-function add(kind,text,who,id){
-  const d=document.createElement('div');
-  d.className='m '+kind; if(id) d.dataset.id=id;
-  setText(d,kind,text,who);
-  chat.appendChild(d);
-  chat.scrollTop=chat.scrollHeight;
-  return d;
-}
-function setText(d,kind,text,who){
-  d.className='m '+kind;
-  d.innerHTML=kind==='speech' ? `<b>${esc(who)}:</b> ${esc(text)}` : esc(text);
-}
-async function renderLog(id){
-  const s=await (await fetch('api/scenes/'+encodeURIComponent(id))).json();
-  scene=s;
-  $('title').textContent=s.title;
-  $('subtitle').textContent=s.rule_mode+' · ход '+s.turn;
-  chat.innerHTML=''; segs={};
-  let last=-1;
-  for(const e of s.log){
-    if(e.kind==='player'&&e.turn!==last){ addPlayer(e.text,e.turn); last=e.turn; }
-    else add(e.kind,e.text,e.who);
-  }
-  renderSide(s.state);
-  return s;
-}
-function addPlayer(text,turn){
-  const d=add('player',text);
-  if(turn){
-    const b=document.createElement('button');
-    b.className='rw'; b.textContent='↶'; b.title='Откатить к началу этого хода';
-    b.onclick=()=>{
-      if(!busy&&confirm('Откатить игру к началу хода '+turn+'?')){
-        ws.send(JSON.stringify({type:'rewind',turn})); setBusy(true);
-      }
-    };
-    d.prepend(b);
-  }
-  return d;
-}
 async function openScene(id){
   view('vGame');
   await renderLog(id);
