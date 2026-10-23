@@ -149,6 +149,45 @@ def mod(v: int) -> int:
     return (v - 10) // 2
 
 
+def amp(v: int) -> int:
+    """Attribute as an amplifier of what a character does: damage, spell power, healing, HP/MP pools.
+    10 is the human norm (0); every 2 points above add +1, capped so stats never replace dice."""
+    return max(-2, min(5, (int(v) - 10) // 2))
+
+
+# passive ability bonus keys: hp, mp (pools), ac, melee, ranged (weapon damage), spell (spell power),
+# heal (healing power), init (initiative)
+BONUS_KEYS = ("hp", "mp", "ac", "melee", "ranged", "spell", "heal", "init")
+
+
+def passive_bonus(c: Character, key: str) -> int:
+    return sum(int((a.bonus or {}).get(key, 0)) for a in c.abilities if a.kind == "passive")
+
+
+def sync_derived(c: Character) -> list[str]:
+    """Max HP/MP follow Выносливость/Разум and passive abilities. The bonus part is stored apart from the base
+    (level-ups), so it can be recomputed any time; HP/MP gained this way are granted, lost ones are clamped."""
+    msgs = []
+    hp_b = 3 * amp(c.attrs.get("Выносливость", 10)) + passive_bonus(c, "hp")
+    mp_b = 2 * amp(c.attrs.get("Разум", 10)) + passive_bonus(c, "mp")
+    if hp_b != c.hp_bonus:
+        d = hp_b - c.hp_bonus
+        c.max_hp = max(1, c.max_hp + d); c.hp_bonus = hp_b
+        c.hp = max(0, min(c.max_hp, c.hp + max(0, d)))
+        msgs.append(f"{c.name}: макс. HP {c.max_hp - d}→{c.max_hp}")
+    if mp_b != c.mp_bonus:
+        d = mp_b - c.mp_bonus
+        c.max_mp = max(0, c.max_mp + d); c.mp_bonus = mp_b
+        c.mp = max(0, min(c.max_mp, c.mp + max(0, d)))
+        msgs.append(f"{c.name}: макс. MP {c.max_mp - d}→{c.max_mp}")
+    return msgs
+
+
+def sync_all(scene: Scene):
+    for c in scene.characters.values():
+        sync_derived(c)
+
+
 def rng(scene: Scene) -> random.Random:
     r = random.Random(f"{scene.rng_seed}:{scene.rng_calls}")
     scene.rng_calls += 1
@@ -210,16 +249,7 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list, note: str = "
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
         c.attr_points += 2; c.ability_points += 1; c.skill_points = c.ability_points
-        if c.is_player or c.id in scene.party:
-            reshuffle_ability_offers(scene, 3, c)
-            locked_n = len(getattr(c, "ability_locks", None) or [])
-            extra = (
-                f" Список способностей перемешан"
-                + (f" (сохранено зафиксированных: {locked_n})" if locked_n else "")
-                + "."
-            )
-        else:
-            extra = ""
+        extra = " Очко способностей тратится в Книге путей." if c.is_player or c.id in scene.party else ""
         msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
                     f"(«Система, распредели {'' if c.is_player else c.name.split()[0] + ' '}Сила +1»).{extra}")
 
@@ -278,8 +308,8 @@ def join_party(scene: Scene, c: Character) -> tuple[bool, str]:
     scene.party.append(c.id)
     c.side = "party"
     c.level, c.exp, c.exp_next = 1, 0, 100
-    c.attr_points = c.ability_points = c.skill_points = 0
-    c.ability_offers, c.ability_locks = [], []
+    c.attr_points = 0
+    c.ability_points = c.skill_points = 1   # like the hero: a first step on a path of the player's choice
     c.reveal.kind = c.reveal.attrs = c.reveal.abilities = True
     c.last_active_turn = scene.turn
     if c.id not in scene.present:
@@ -430,187 +460,6 @@ def give_item(scene: Scene, giver: Character, name: str, receiver: Character) ->
 
 
 
-# ---- ability unlock offers (spend ability_points) ----
-ABILITY_CATALOG = [
-    {"name": "Удар наёмника", "kind": "active", "description": "Точный рубящий удар: в бою опишите применение — бонус к следующему удару оружием.", "cost": "", "cooldown": "1/сцена"},
-    {"name": "Железная стойка", "kind": "passive", "description": "Привычка держать строй: легче выдерживать боль и усталость в долгих стычках.", "cost": "", "cooldown": ""},
-    {"name": "Глаз следопыта", "kind": "passive", "description": "Замечаете следы, дым, ловушки и чужое присутствие раньше обычного.", "cost": "", "cooldown": ""},
-    {"name": "Рывок", "kind": "active", "description": "Короткий ускоренный рывок к цели или в укрытие.", "cost": "", "cooldown": "1/сцена"},
-    {"name": "Твёрдый дух", "kind": "passive", "description": "Сложнее сломать волю страхом, болью или чужой магией давления.", "cost": "", "cooldown": ""},
-    {"name": "Чтение потока", "kind": "active", "description": "На миг «видите» структуру маны/Системы вокруг — подсказка от рассказчика.", "cost": "2 MP", "cooldown": ""},
-    {"name": "Грозное присутствие", "kind": "active", "description": "Короткая угроза или взгляд, чтобы сбить с толку слабого противника.", "cost": "", "cooldown": "1/сцена"},
-    {"name": "Полевая медицина", "kind": "active", "description": "Быстрая перевязка: небольшое исцеление себе или союзнику вне тяжёлого боя.", "cost": "", "cooldown": "1/сцена"},
-    {"name": "Ночное зрение", "kind": "passive", "description": "В полумраке ориентируетесь почти как днём.", "cost": "", "cooldown": ""},
-    {"name": "Контрудар", "kind": "active", "description": "После чужой атаки вблизи — ответный удар тем же ходом (по решению механики/рассказчика).", "cost": "", "cooldown": "1/сцена"},
-]
-
-def _catalog_by_name() -> dict[str, dict]:
-    return {x["name"]: x for x in ABILITY_CATALOG}
-
-
-def _offer_seed(scene: Scene, level: int, c: Character | None = None) -> int:
-    """Stable per level (not per turn) so opening the list mid-level does not reshuffle; differs per companion."""
-    own = 0 if c is None or c.is_player else sum(map(ord, c.id)) * 31
-    return int(scene.rng_seed) + int(level) * 10007 + 42 + own
-
-
-def reshuffle_ability_offers(scene: Scene, n: int = 3, who: Character | None = None) -> list[dict]:
-    """Rebuild offer list for current level. Locked names stay; other slots reshuffle."""
-    p = who or scene.player
-    have = {norm(a.name) for a in p.abilities}
-    cat = _catalog_by_name()
-    locked: list[str] = []
-    for name in list(getattr(p, "ability_locks", None) or []):
-        if name not in cat:
-            continue
-        if norm(name) in have:
-            continue
-        if name not in locked:
-            locked.append(name)
-    p.ability_locks = locked[:]
-    need = max(0, n - len(locked))
-    pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in locked]
-    rng = random.Random(_offer_seed(scene, p.level, p))
-    rng.shuffle(pool)
-    # light preference by attrs (after shuffle, bubble preferred forward)
-    attrs = p.attrs or {}
-    prefer = []
-    if attrs.get("Разум", 10) >= 15:
-        prefer += ["Чтение потока", "Глаз следопыта"]
-    if attrs.get("Сила", 10) >= 13:
-        prefer += ["Удар наёмника", "Контрудар"]
-    if attrs.get("Ловкость", 10) >= 13:
-        prefer += ["Рывок", "Глаз следопыта"]
-    if attrs.get("Воля", 10) >= 13:
-        prefer += ["Твёрдый дух", "Грозное присутствие"]
-    ordered = []
-    for name in prefer:
-        for x in pool:
-            if x["name"] == name and x not in ordered:
-                ordered.append(x)
-    for x in pool:
-        if x not in ordered:
-            ordered.append(x)
-    picked = locked + [x["name"] for x in ordered[:need]]
-    p.ability_offers = picked
-    return ability_offers(scene, n, p)
-
-
-def ability_offers(scene: Scene, n: int = 3, who: Character | None = None) -> list[dict]:
-    """Current unlock offers. Creates/fills cache if empty; does not reshuffle mid-level."""
-    p = who or scene.player
-    have = {norm(a.name) for a in p.abilities}
-    cat = _catalog_by_name()
-    # drop taken / unknown from cache and locks
-    offers = [nm for nm in (getattr(p, "ability_offers", None) or []) if nm in cat and norm(nm) not in have]
-    locks = [nm for nm in (getattr(p, "ability_locks", None) or []) if nm in cat and norm(nm) not in have]
-    p.ability_locks = locks
-    if len(offers) < n:
-        # first open or after taking: fill remaining without wiping locks
-        if not offers and not locks:
-            return reshuffle_ability_offers(scene, n, p)
-        # partial refill keeping existing order + locks
-        have_names = set(offers)
-        pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in have_names]
-        rng = random.Random(_offer_seed(scene, p.level, p) + len(p.abilities) * 13)
-        rng.shuffle(pool)
-        for x in pool:
-            if len(offers) >= n:
-                break
-            offers.append(x["name"])
-        p.ability_offers = offers
-    else:
-        p.ability_offers = offers[: max(n, len(locks))]
-        offers = p.ability_offers
-    out = []
-    for nm in offers[:n]:
-        x = dict(cat[nm])
-        x["locked"] = nm in locks
-        out.append(x)
-    return out
-
-
-def lock_ability_offer(scene: Scene, name: str, who: Character | None = None) -> str:
-    p = who or scene.player
-    name = re.sub(r"\s+", " ", (name or "").strip())
-    if not name:
-        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, зафиксируй Рывок»."
-    offers = ability_offers(scene, 8, p)
-    pick = None
-    nl = norm(name)
-    for x in offers:
-        xn = norm(x["name"])
-        if xn == nl or nl in xn or xn in nl:
-            pick = x["name"]; break
-    if not pick:
-        return f"⟦ СИСТЕМА ⟧ «{name}» сейчас нет в списке предложений. Откройте: «Система, способности»."
-    locks = list(getattr(p, "ability_locks", None) or [])
-    if pick not in locks:
-        locks.append(pick)
-    p.ability_locks = locks
-    if pick not in (p.ability_offers or []):
-        p.ability_offers = [pick] + list(p.ability_offers or [])
-    return f"⟦ СИСТЕМА ⟧ Зафиксировано: **{pick}** — останется в списке при новом уровне."
-
-
-def unlock_ability_offer(scene: Scene, name: str, who: Character | None = None) -> str:
-    p = who or scene.player
-    name = re.sub(r"\s+", " ", (name or "").strip())
-    if not name:
-        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, открепи Рывок»."
-    locks = list(getattr(p, "ability_locks", None) or [])
-    nl = norm(name)
-    hit = next((x for x in locks if norm(x) == nl or nl in norm(x) or norm(x) in nl), None)
-    if not hit:
-        return f"⟦ СИСТЕМА ⟧ «{name}» не зафиксирована."
-    p.ability_locks = [x for x in locks if x != hit]
-    return f"⟦ СИСТЕМА ⟧ Снята фиксация с **{hit}** — при повышении уровня может уйти из списка."
-
-
-def take_ability(scene: Scene, name: str, who: Character | None = None) -> str:
-    p = who or scene.player
-    if p.ability_points <= 0:
-        return f"⟦ СИСТЕМА ⟧ У {p.name} нет очков способностей. Они приходят с уровнем."
-    name = re.sub(r"\s+", " ", (name or "").strip())
-    if not name:
-        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, возьми Удар наёмника»."
-    pick = None
-    nl = norm(name)
-    for x in ability_offers(scene, 8, p) + ABILITY_CATALOG:
-        xn = norm(x["name"])
-        if xn == nl or nl in xn or xn in nl:
-            pick = x
-            break
-    if not pick:
-        names = [x["name"] for x in ABILITY_CATALOG]
-        m = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
-        if m:
-            for x in ABILITY_CATALOG:
-                if x["name"] == m[0]:
-                    pick = x
-                    break
-    if not pick:
-        return f"⟦ СИСТЕМА ⟧ Нет способности «{name}». Откройте список: «Система, способности»."
-    if any(norm(a.name) == norm(pick["name"]) for a in p.abilities):
-        return f"⟦ СИСТЕМА ⟧ «{pick['name']}» уже есть."
-    p.ability_points -= 1
-    p.skill_points = p.ability_points
-    p.abilities.append(Ability(
-        name=pick["name"], kind=pick.get("kind") or "passive",
-        description=pick.get("description") or "", cost=pick.get("cost") or "",
-        cooldown=pick.get("cooldown") or "",
-    ))
-    # remove from offers/locks
-    p.ability_offers = [x for x in (p.ability_offers or []) if norm(x) != norm(pick["name"])]
-    p.ability_locks = [x for x in (p.ability_locks or []) if norm(x) != norm(pick["name"])]
-    kind_ru = "активная" if pick.get("kind") == "active" else "пассивная"
-    return (
-        f"### ⟦ СИСТЕМА · СПОСОБНОСТЬ ⟧\n"
-        f"{p.name}: открыто **{pick['name']}** ({kind_ru}). "
-        f"Очков способностей осталось: {p.ability_points}."
-    )
-
-
 # ---------------- 'Система, ...' commands ----------------
 
 def apply_reveal(c: Character, what: str) -> list[str]:
@@ -734,23 +583,21 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
     if any(k in r for k in ("провер", "аудит", "audit", "карточки")) and any(
             k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
         return "director_audit", r
-    if re.fullmatch(r"(пути|пути магии|магия|школы магии|магические пути|paths)", r): return "paths", r
+    if re.search(r"\bкниг", r) or re.fullmatch(
+            r"((покажи|открой)\s+)?(мои\s+)?(пути(\s+(магии|развития))?|магия|школы магии|магические пути|следы|отрасли|paths)", r):
+        return "paths", r        # the Book of paths: computed by code, no LLM
     if "?" in rest or re.match(r"(как|что|почему|зачем|сколько|можно|могу|какие|какой|какая|где|когда|чем|кто|"
-                               r"расскажи|объясни|подскажи|хочу|нужно|требуется)\b", r):
+                               r"расскажи|объясни|подскажи|хочу|нужно|требуется)\b", r) or re.match(r"покажи\b.*\b(пут|отрасл|ступен|ранг)", r):
         return "ask", r          # a question, even about opening a path, is for the System agent
-    if re.search(r"\b(пут[ьиюё]|ступен\w*)\b", r) and re.search(r"\b(откр\w*|изуч\w*|освой\w*|прокач\w*)\b", r):
+    if re.search(r"\b(пут[ьиюё]|ступен\w*|ранг\w*|отрасл\w*)\b", r) and re.search(r"\b(откр\w*|изуч\w*|освой\w*|прокач\w*|развей|развить)\b", r):
         return "unlock_path", r
+    if re.match(r"(возьм|выуч|освой|прокач)\w*\s+\S", r):
+        return "unlock_path", r  # «возьми Огненную стрелу» — the ability of the next rank/tier of some path
     if re.search(r"маги|\bпут[ьиюё]\b|школ|заклин|стихи", r):
         return "ask", r
     if any(k in r for k in ("отпусти", "исключи", "прогони", "dismiss")): return "dismiss", r
     if any(k in r for k in ("отряд", "групп", "party", "спутник")): return "party", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
-    if any(k in r for k in ("зафикс", "закреп", "запин", "lock offer", "lock ability")):
-        return "lock_ability", r
-    if any(k in r for k in ("откреп", "отфикс", "сними фикс", "unlock offer", "unlock ability")):
-        return "unlock_ability", r
-    if any(k in r for k in ("возьм", "выуч", "открой способ", "взять способ", "выбрать способ", "unlock", "learn")):
-        return "take_ability", r
     if any(k in r for k in ("навык", "скил", "skill", "умени", "способн", "абил")) and "распредел" not in r and "влож" not in r:
         return "abilities", r
     if any(k in r for k in ("инвент", "invent", "сумк", "предмет", "вещи")): return "inventory", r
@@ -771,12 +618,35 @@ def _bar(cur, mx, n=10):
     return "█" * f + "░" * (n - f)
 
 
+EFFECT_RU = {"damage": "урон", "heal": "лечение", "shield": "щит", "buff": "усиление", "debuff": "ослабление",
+             "control": "оглушение", "utility": "особое", "passive": "пассивно"}
+BONUS_RU = {"hp": "макс. HP", "mp": "макс. MP", "ac": "КБ", "melee": "урон в ближнем бою", "ranged": "урон дальним оружием",
+            "spell": "сила заклинаний", "heal": "сила лечения", "init": "инициатива"}
+
+
+def ability_stats(a: Ability) -> str:
+    """Short mechanical summary: «урон 2d6 +Разум · 3 MP», «КБ +1»."""
+    if a.kind == "passive":
+        return ", ".join(f"{BONUS_RU.get(k, k)} {v:+d}" for k, v in (a.bonus or {}).items() if v)
+    bits = []
+    if a.effect and a.effect not in ("utility", "passive"):
+        pw = f"{a.power} ход." if a.effect == "control" else (f"+{a.power}" if a.effect in ("buff", "debuff") else a.power)
+        bits.append(f"{EFFECT_RU[a.effect]} {pw}".strip() + (f" +{a.scale}" if a.scale else ""))
+    elif a.effect == "utility":
+        bits.append("особое")
+    if a.mp:
+        bits.append(f"{a.mp} MP")
+    elif a.cost:
+        bits.append(a.cost)
+    return " · ".join(bits)
+
+
 def status_text(c: Character) -> str:
     from . import combat as C
     lines = [f"#### {c.name} — уровень {c.level}",
              f"❤️ HP {c.hp}/{c.max_hp} {_bar(c.hp, c.max_hp)}", f"🔷 MP {c.mp}/{c.max_mp} {_bar(c.mp, c.max_mp)}",
              f"✨ EXP {c.exp}/{c.exp_next} · КБ {C.ac(c)}",
-             " · ".join(f"{a} {v} ({mod(v):+d})" for a, v in c.attrs.items())]
+             " · ".join(f"{a} {v} ({amp(v):+d})" for a, v in c.attrs.items())]
     if c.conditions:
         lines.append("Состояния: " + ", ".join(f"{x.name}({x.turns_left})" for x in c.conditions))
     if c.attr_points or c.skill_points:
@@ -790,13 +660,15 @@ def status_text(c: Character) -> str:
 def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
     from . import combat as C
     p = scene.player
-    if cmd in ("status", "abilities", "lock_ability", "unlock_ability", "take_ability", "assign", "conditions", "unlock_path"):
+    if cmd in ("status", "abilities", "assign", "conditions", "unlock_path", "paths"):
         p, rest = pick_member(scene, rest)   # progression of companions is the hero's call too
+    if cmd == "paths":
+        from . import magic as G
+        return G.book_text(scene, p)
     if cmd == "unlock_path":
         from . import magic as G
-        if not scene.paths:
-            return "⟦ СИСТЕМА ⟧ Пути магии этого мира ещё не открыты Системе. Спросите: «Система, пути магии»."
-        name = re.sub(r"откр\w*|изуч\w*|освой\w*|прокач\w*|следующ\w*|ступен\w*|\bпут[ьиюё]\b|\bдля\b", "", rest, flags=re.I).strip(" .,;:—-")
+        name = re.sub(r"откр\w*|изуч\w*|освой\w*|прокач\w*|разв\w*|возьм\w*|выуч\w*|следующ\w*|ступен\w*|ранг\w*|"
+                      r"отрасл\w*|\bпут[ьиюё]\b|\bдля\b", "", rest, flags=re.I).strip(" .,;:—-«»")
         ok, msg = G.unlock_tier(scene, p, name)
         return "### ⟦ СИСТЕМА · ПУТЬ ⟧\n" + ("" if ok else "Отказано. ") + msg
     if cmd == "party":
@@ -829,55 +701,13 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         return s
     if cmd == "abilities":
         lines = ["### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧" + ("" if p.is_player else f" {p.name}")]
-        lines.append(f"Очки способностей: **{p.ability_points}** · очки атрибутов: {p.attr_points}")
         if not p.abilities:
-            lines.append("Сейчас открытых способностей нет (это не «ближний бой» — только особые умения).")
-        else:
-            act = [a for a in p.abilities if a.kind == "active"]
-            pas = [a for a in p.abilities if a.kind != "active"]
-            if act:
-                lines.append("Активные:")
-                for a in act:
-                    extra = ", ".join(x for x in (a.cost and f"цена {a.cost}", a.cooldown and f"кд {a.cooldown}") if x)
-                    lines.append(f"- {a.name}" + (f" ({extra})" if extra else "") + (f" — {a.description}" if a.description else ""))
-            if pas:
-                lines.append("Пассивные:")
-                for a in pas:
-                    lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
-        if p.ability_points > 0:
-            offers = ability_offers(scene, 3, p)
-            lines.append("")
-            lines.append("Можно открыть (1 очко за способность; список перемешивается с новым уровнем):")
-            for i, x in enumerate(offers, 1):
-                kd = "акт." if x.get("kind") == "active" else "пасс."
-                lock = " 🔒" if x.get("locked") else ""
-                lines.append(f"{i}. **{x['name']}**{lock} ({kd}) — {x.get('description') or '—'}")
-            tip = offers[0]["name"] if offers else "Название"
-            whom = "" if p.is_player else p.name.split()[0] + " "
-            lines.append(f"Взять: «Система, возьми {whom}{tip}».")
-            lines.append("Зафиксировать в списке (не уйдёт при уровне): «Система, зафиксируй {tip}».")
-            lines.append("Снять фиксацию: «Система, открепи {tip}».")
-        else:
-            lines.append("Очков способностей нет — они приходят с новым уровнем.")
+            lines.append("Открытых способностей пока нет.")
+        for a in [a for a in p.abilities if a.kind == "active"] + [a for a in p.abilities if a.kind != "active"]:
+            lines.append(f"- {'⚡' if a.kind == 'active' else '◇'} {a.name}" + (f" ({ability_stats(a)})" if ability_stats(a) else "")
+                         + (f" — {a.description}" if a.description else ""))
+        lines.append(f"Очки способностей: **{p.ability_points}** — тратятся в Книге путей («Система, пути»).")
         return chr(10).join(lines)
-    if cmd == "lock_ability":
-        name = re.sub(
-            r"зафикс\w*|закреп\w*|запин\w*|lock\s*offer|lock\s*ability|способност\w*",
-            "", rest, flags=re.I,
-        ).strip(" .,;:—-")
-        return lock_ability_offer(scene, name, p)
-    if cmd == "unlock_ability":
-        name = re.sub(
-            r"откреп\w*|отфикс\w*|сними\s*фикс\w*|unlock\s*offer|unlock\s*ability|способност\w*",
-            "", rest, flags=re.I,
-        ).strip(" .,;:—-")
-        return unlock_ability_offer(scene, name, p)
-    if cmd == "take_ability":
-        name = re.sub(
-            r"возьм\w*|выуч\w*|открой|открыть|взять|выбрать|способност\w*|навык\w*|unlock|learn",
-            "", rest, flags=re.I,
-        ).strip(" .,;:—-")
-        return take_ability(scene, name, p)
     if cmd == "inspect":
         return inspect_target(scene, rest)
     if cmd == "inventory":
@@ -922,12 +752,12 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         if n > p.attr_points:
             return f"⟦ СИСТЕМА ⟧ Недостаточно очков у {p.name}: есть {p.attr_points}."
         p.attr_points -= n; p.attrs[attr] += n
+        extra = sync_derived(p)
         return (f"⟦ СИСТЕМА ⟧ {'' if p.is_player else p.name + ': '}{attr} {p.attrs[attr] - n}→{p.attrs[attr]}. "
-                f"Осталось очков: {p.attr_points}.")
-    if cmd == "train":
-        return "⟦ СИСТЕМА ⟧ Очки навыков в «ближний бой» не вкладываются. Смотрите «Система, способности» и «Система, возьми …»."
+                f"Осталось очков: {p.attr_points}." + (" " + "; ".join(extra) + "." if extra else ""))
     return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
-            "- «Система, статус» / способности / «возьми …» / инвентарь / состояния / бой\n"
+            "- «Система, статус» / способности / инвентарь / состояния / бой\n"
+            "- «Система, пути» — Книга путей; «Система, открой путь Воина» / «возьми Огненную стрелу»\n"
             "- «Система, осмотри Имя» — разведка противника\n"
             "- «Система, директор …» / «Система, проверь карточки»\n"
             "- «Система, экипируй Короткий меч» / «сними Щит»\n"
@@ -947,6 +777,10 @@ def state_line(scene: Scene) -> str:
     party = [scene.characters[i] for i in scene.party if i in scene.characters]
     combat += (" Отряд героя: " + ", ".join(f"{c.name} (ур. {c.level}, HP {c.hp}/{c.max_hp})" for c in party) + "."
                if party else "")
+    # learned abilities live here, not in the cached card: the narrator needs exact names for <cast>
+    acts = [f"{c.name}: " + ", ".join(a.name for a in c.abilities if a.kind == "active")
+            for c in [p] + party if any(a.kind == "active" for a in c.abilities)]
+    skills = (" Активные способности — " + "; ".join(acts) + ".") if acts else ""
     return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, MP {p.mp}/{p.max_mp}, "
-            f"EXP {p.exp}/{p.exp_next}, КБ {C.ac(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat} "
+            f"EXP {p.exp}/{p.exp_next}, КБ {C.ac(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat}{skills} "
             f"В сцене: {', '.join(present) or 'никого'}.")

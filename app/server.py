@@ -50,10 +50,12 @@ def get_scene(sid):
             sc = store.load_scene(sid)
         except FileNotFoundError:
             raise HTTPException(404, "сцена не найдена")
-        if "<join" not in sc.system_prompt:   # scenes from before the party mechanic: teach the narrator the new tags
+        from . import magic as G, mechanics as M
+        G.ensure_core(sc); M.sync_all(sc)
+        if "<cast" not in sc.system_prompt:   # scenes from before the Book of paths: teach the narrator the new tags
             from . import prompts
             sc.system_prompt = prompts.build_system(sc)
-            store.save_scene(sc)
+        store.save_scene(sc)
         state["scenes"][sid] = sc
     return state["scenes"][sid]
 
@@ -256,7 +258,8 @@ async def ws(websocket: WebSocket, sid: str):
                 state["subs"].get(sid, set()).discard(w)
 
     async def after_turn():
-        await eng.fill_party(sc, emit)      # a new companion's card first, then memory archiving
+        await eng.fill_party(sc, emit)      # a new companion's card first, then the Book of paths, then memory
+        await eng.develop(sc, emit)
         await eng.background(sc, emit)
 
     await websocket.send_text(json.dumps({"type": "hello", "state": eng.state(sc), "busy": state["turn_running"]},

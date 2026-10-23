@@ -60,15 +60,14 @@ def test_individual_exp_cap_per_character():
 def test_player_levels_up_companion():
     s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
     M.grant_exp(s, sil, 100, [])
-    assert sil.level == 2 and sil.attr_points == 2 and sil.ability_points == 1
+    assert sil.level == 2 and sil.attr_points == 2 and sil.ability_points == 2   # 1 on joining + 1 per level
     lov = sil.attrs["Ловкость"]
     out = M.run_system_command(s, *M.parse_system_command("Система, распредели Сильфе Ловкость +1"))
     assert sil.attrs["Ловкость"] == lov + 1 and sil.attr_points == 1 and "Сильфа" in out
-    offers = M.ability_offers(s, 3, sil)
-    assert offers
-    out = M.run_system_command(s, *M.parse_system_command(f"Система, возьми Сильфе {offers[0]['name']}"))
-    assert any(a.name == offers[0]["name"] for a in sil.abilities) and sil.ability_points == 0
-    assert s.player.ability_points == 0 and not any(a.name == offers[0]["name"] for a in s.player.abilities)
+    out = M.run_system_command(s, *M.parse_system_command("Система, открой Сильфе путь Следопыта"))
+    assert sil.paths.get("core-sledopyt") == 1 and sil.ability_points == 1, out
+    assert any(a.name == "Меткий выстрел" for a in sil.abilities)
+    assert s.player.ability_points == 1 and not s.player.paths
 
 
 def test_party_and_dismiss_commands():

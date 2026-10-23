@@ -186,12 +186,14 @@
           <button class="sheet-close" id="bSheetClose" aria-label="Закрыть лист героя"><svg width="18" height="18" viewBox="0 0 14 14"><path d="M2 2 L 12 12 M12 2 L 2 12" stroke="currentColor" stroke-width="1.5"/></svg></button>
           <nav class="ribs" aria-label="Вкладки листа героя">
             <button class="rib" data-tab="hero" style="--c:#6e1d12">Герой</button>
+            <button class="rib" data-tab="book" style="--c:#4b2f5e">Книга<span class="cnt" id="bookN"></span></button>
             <button class="rib" data-tab="scene" style="--c:#2c4a3a">Сцена<span class="cnt" id="presentN"></span></button>
             <button class="rib" data-tab="director" style="--c:#2c3a5c">Директор</button>
             <button class="rib" data-tab="settings" style="--c:#6b5020">Настройки</button>
           </nav>
           <div class="panes scr">
             <div class="pane" data-pane="hero" id="paneHero"></div>
+            <div class="pane" data-pane="book" id="paneBook"></div>
             <div class="pane" data-pane="scene" id="paneScene"></div>
             <div class="pane" data-pane="director">
               <section>
@@ -235,6 +237,8 @@
                   <dt>Система, бой</dt><dd>порядок ходов и раунд</dd>
                   <dt>Система, используй …</dt><dd>предмет из описи</dd>
                   <dt>Система, распредели Сила +1</dt><dd>очки уровня</dd>
+                  <dt>Система, пути</dt><dd>Книга путей: что открыть за очки способностей</dd>
+                  <dt>Система, возьми …</dt><dd>следующий ранг пути по названию способности</dd>
                   <dt>Система, директор …</dt><dd>поручение миру вне хода</dd>
                 </dl>
               </section>

@@ -411,8 +411,8 @@ body.busy .send .wax { animation: spin 5s linear infinite; }
 .menu .k { font-style: italic; font-size: 14px; color: var(--ink-soft); }
 
 /* правая страница: лист героя */
-.ribs { position: absolute; top: 0; left: 26px; z-index: 2; display: flex; gap: 6px; filter: drop-shadow(0 3px 2px rgba(0, 0, 0, .35)); }
-.rib { position: relative; min-width: 84px; height: 64px; padding: 12px 9px 0; border: 0; cursor: pointer; text-align: center; font: 700 15px/1.1 var(--f-sc); letter-spacing: .06em; color: #f3e4c6;
+.ribs { position: absolute; top: 0; left: 26px; right: 54px; z-index: 2; display: flex; gap: 5px; filter: drop-shadow(0 3px 2px rgba(0, 0, 0, .35)); }
+.rib { position: relative; flex: 1 1 auto; min-width: 0; max-width: 110px; height: 64px; padding: 12px 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; cursor: pointer; text-align: center; font: 700 15px/1.1 var(--f-sc); letter-spacing: .06em; color: #f3e4c6;
   clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 12px), 0 100%); background-color: var(--c);
   background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, .06) 0 1px, transparent 1px 3px); transition: height .2s; }
 .rib:hover { filter: brightness(1.15); }
@@ -456,7 +456,6 @@ body.busy .send .wax { animation: spin 5s linear infinite; }
 .party-sw button:hover { color: var(--ink); }
 .party-sw .dotp { position: absolute; top: 2px; right: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--rubric); box-shadow: 0 0 0 2px var(--paper); }
 .party-sw > .sub { margin-left: auto; align-self: center; }
-.abil.offer { padding: 8px 10px; border: 1px dashed var(--ink-faint); }
 .abil.path { padding: 8px 10px; border: 1px solid var(--ink-faint); }
 .abil.path.ready { border-color: var(--rubric); background: var(--hover); }
 .abil.path .miss { font-style: italic; color: var(--ink-soft); font-size: 15px; }
@@ -537,8 +536,34 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); }
   .shelf-wrap h1 { font-size: 44px; }
   .slot { flex-basis: 50%; } .bk { width: 150px; height: 220px; } .bk .t { font-size: 18px; }
   .make .mk { font-size: 24px; }
-  .ribs { left: 12px; gap: 4px; }
-  .rib { min-width: 64px; padding: 12px 5px 0; font-size: 12.5px; letter-spacing: .02em; }
+  .ribs { left: 12px; right: 46px; gap: 3px; }
+  .rib { padding: 12px 2px 0; font-size: 12px; letter-spacing: 0; }
   .panes { padding: 92px 20px 24px 22px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .vine-leaf { transform: none; } .vine-reveal { stroke-dashoffset: 0; } }
+
+/* Книга путей */
+.bpaths { display: flex; flex-direction: column; gap: 10px; }
+.bpath { border: 1px solid var(--ink-faint); padding: 8px 10px; }
+.bpath.ready { border-color: var(--rubric); background: var(--hover); }
+.bpath > summary { display: flex; flex-direction: column; gap: 2px; cursor: pointer; list-style: none; }
+.bpath > summary::-webkit-details-marker { display: none; }
+.bpath .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bpath .nm { font: 700 20px/1.2 var(--f-head); }
+.bpath .kd, .leads .kd, .bab .kd { font: 600 14px/1.3 var(--f-sc); letter-spacing: .06em; color: var(--ink-soft); }
+.bpath .ds, .leads .ds, .bab .ds { font-size: 15px; line-height: 1.45; }
+.bpath .miss { font-style: italic; color: var(--ink-soft); }
+.pips { display: inline-flex; gap: 4px; flex: none; }
+.pips i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--rubric); }
+.pips i.on { background: var(--rubric); }
+.tiers { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.tiers li { display: grid; grid-template-columns: 30px 1fr; gap: 6px; opacity: .6; }
+.tiers li.got, .tiers li.next { opacity: 1; }
+.tiers li.got .rn { color: var(--rubric); }
+.tiers .rn { font: 700 16px/1.4 var(--f-sc); color: var(--ink-soft); }
+.tiers li > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bab { display: flex; flex-direction: column; gap: 1px; }
+.bab .nm { font: 700 17px/1.25 var(--f-head); }
+.leads { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.leads li { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--orn); }
+.leads .nm { font: 700 18px/1.2 var(--f-head); }

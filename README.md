@@ -36,10 +36,11 @@ Embedding model (CPU, ~120 MB, not in git):
                       orchestration (archive/compress/re-warm, retrieval, context budget), rewind/regenerate
     app/budget.py     dynamic per-turn budget: tier камерный/обычный/крупный from active NPCs, input type, novelty, length
     app/memory.py     e5-small ONNX embedder, Chroma store, hybrid retrieval, multi-block archiver
-    app/combat.py     initiative, attack/AC/damage, conditions
-    app/magic.py      magic paths: AI invents them per world, code balances tiers (level/attr/points/story), <fulfill/>
+    app/combat.py     initiative, attack/AC/damage, <cast> (MP, power dice + attribute amplifier, resist by Воля),
+                      conditions (щит/усиление/ослабление/оглушение/кровотечение)
+    app/magic.py      Book of paths: 5 core paths (fixed mechanics, AI renames per world) + branches the hero
+                      opens in the story (<discover/> seen -> <learn/> studied -> AI writes, code balances), <fulfill/>
     app/system_agent.py «Система, …» questions: rules knowledge + live sheets; code checks and performs any action
-    app/mechanics.py  checks, inventory equip/use/give, Система commands, XP/levels
     app/cards.py      Character Card V2/V3 PNG/JSON + text import
     app/store.py      JSON saves: data/scenes/<id>.json, data/characters/<name>.json
     app/server.py     FastAPI + WebSocket /ws/<scene>

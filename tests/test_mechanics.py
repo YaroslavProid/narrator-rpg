@@ -110,7 +110,7 @@ def test_clamp_hp_mp_exp():
 def test_level_up_ability_points():
     s = mk(); p = s.player; msgs = []
     M.grant_exp(s, p, 120, msgs)
-    assert p.level == 2 and p.attr_points == 2 and p.ability_points == 1
+    assert p.level == 2 and p.attr_points == 2 and p.ability_points == 2      # 1 at the start + 1 per level
     assert any("УРОВЕНЬ" in m for m in msgs)
 
 

@@ -575,7 +575,7 @@ inp.addEventListener('keydown', e => {
 function prefill(text) { inp.value = text; autosize(); closeSheet(); inp.focus(); inp.setSelectionRange(text.length, text.length); }
 
 const CMDS = [['Статус', 'здоровье, мана', 'статус'], ['Опись', 'инвентарь', 'инвентарь'], ['Способности', '', 'способности'], ['Состояния', '', 'состояния'],
-              ['Бой', 'порядок ходов', 'бой'], ['Пути магии', 'что открыто и что нужно', 'пути магии'],
+              ['Бой', 'порядок ходов', 'бой'], ['Книга путей', 'пути, отрасли, следы', 'пути'],
               ['Спросить Систему…', 'любой вопрос о правилах', null], ['Справка', '', 'помощь']];
 const menu = $('#sysMenu');
 menu.innerHTML = CMDS.map(([l, k, c], i) => `<button role="menuitem" data-i="${i}"><span>${l}</span><span class="k">${k}</span></button>`).join('');
@@ -645,31 +645,66 @@ const turnsLeft = n => `ещё ${n} ${plural(n, ['ход', 'хода', 'ходо
 
 let sheetWho = null;   // whose sheet the «Герой» ribbon shows: the hero or a companion
 const firstName = n => String(n || '').split(/\s+/)[0];
-const ROMAN3 = ['', 'I', 'II', 'III'];
-function pathsSection(state, c, hero, whom) {
-  const mg = state.magic;
-  if (!mg) return `<section><h2 class="sh">Пути магии</h2><p class="sub" style="margin:0 0 6px">Система ещё не рассказала о магии этого мира.</p>
-    <button class="tbtn" data-cmd="пути магии">Узнать о путях</button></section>`;
-  const rows = (mg.status[c.id] || []).map(x => {
-    const meta = mg.paths.find(p => p.id === x.id) || {};
-    const head = `<div class="top"><span class="nm">${esc(x.path)}</span><span class="kd">${x.have ? 'ступень ' + ROMAN3[x.have] : 'не открыт'}</span></div>
-      <span class="kd">${esc(meta.attr || '')}${meta.description && !x.have ? ' · ' + esc(meta.description) : ''}</span>`;
-    if (x.done) return `<div class="abil path">${head}<span class="ds">Все ступени пройдены.</span></div>`;
-    const next = `Ступень ${ROMAN3[x.tier]} даст: ${esc((x.abilities || []).join(', '))}.`;
-    return `<div class="abil path${x.ok ? ' ready' : ''}">${head}<span class="ds">${next}</span>
-      ${x.ok ? `<div><button class="tbtn" data-cmd="открой путь ${esc(x.path)} ${esc(whom)}">Открыть ступень ${ROMAN3[x.tier]}</button></div>`
-             : `<span class="ds miss">Не хватает: ${x.missing.map(esc).join('; ')}</span>`}</div>`;
-  }).join('');
-  return `<section><h2 class="sh">Пути магии</h2><div style="display:flex;flex-direction:column;gap:12px">${rows}</div>
-    <button class="tbtn" style="margin-top:8px" data-pre="Система, ">Спросить Систему…</button></section>`;
+const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V'];
+const pts = n => `${n} ${plural(n, ['очко', 'очка', 'очков'])}`;
+
+/* ============ Книга путей ============ */
+function bookPath(book, p, c, whom) {
+  const s = (book.status[c.id] || {})[p.id] || {};
+  const have = s.have || 0, n = p.tiers.length, word = p.core ? 'ранг' : 'ступень';
+  const pips = p.tiers.map(t => `<i class="${t.tier <= have ? 'on' : ''}"></i>`).join('');
+  const roots = p.parents.length ? `<span class="kd">от: ${p.parents.map(x => esc(x.name) + ' ' + ROMAN[x.rank]).join(', ')}</span>` : '';
+  const tier = t => {
+    const got = t.tier <= have, next = t.tier === have + 1;
+    const abil = t.abilities.map(a => `<div class="bab"><span class="nm">${a.kind === 'active' ? '⚡' : '◇'} ${esc(a.name)}</span>${a.stats ? `<span class="kd">${esc(a.stats)}</span>` : ''}${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`).join('');
+    let foot = '';
+    if (next && s.ok) foot = `<button class="tbtn" data-cmd="открой ${word} ${esc(whom)}${esc(p.name)}">Открыть ${word} ${ROMAN[t.tier]} · ${pts(t.cost)}</button>`;
+    else if (next) foot = `<span class="ds miss">Не хватает: ${(s.missing || []).map(esc).join('; ')}</span>`;
+    else if (!got) foot = `<span class="ds miss">${pts(t.cost)}${t.story ? ' · ' + esc(t.story) : ''}</span>`;
+    return `<li class="${got ? 'got' : next ? 'next' : ''}"><b class="rn">${ROMAN[t.tier]}</b><div>${abil}${foot}</div></li>`;
+  };
+  return `<details class="bpath${s.ok ? ' ready' : ''}"${have ? ' open' : ''}>
+    <summary><span class="top"><span class="nm">${esc(p.name)}</span><span class="pips" title="${word} ${ROMAN[have] || '—'} из ${ROMAN[n]}">${pips}</span></span>
+      ${roots}${p.description ? `<span class="ds">${esc(p.description)}</span>` : ''}
+      ${!have && s.tier ? `<span class="kd">${word} I: ${esc(p.tiers[0].abilities.map(a => a.name).join(', '))} · ${pts(p.tiers[0].cost)}${s.ok ? '' : ' · закрыто'}</span>` : ''}</summary>
+    <ol class="tiers">${p.tiers.map(tier).join('')}</ol></details>`;
 }
 
+function bookPane(state, sw) {
+  const book = state.book; if (!book) return '';
+  const c = state.characters[sheetWho] || state.characters[state.player_id];
+  const hero = c.id === state.player_id, whom = hero ? '' : firstName(c.name) + ' ';
+  const core = book.paths.filter(p => p.core), br = book.paths.filter(p => !p.core);
+  const leads = book.leads || [];
+  const n = book.points[c.id] || 0;
+  return sw + `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px">
+      <span style="font:700 28px/1.1 var(--f-head)">Книга путей</span>
+      <span style="font:700 16px/1.3 var(--f-sc);letter-spacing:.08em;color:${n ? 'var(--rubric)' : 'var(--ink-soft)'}">${esc(firstName(c.name))} · ${pts(n)}</span>
+    </div>
+    <p class="sub" style="margin:0">Очки способностей приходят с уровнем. Атрибуты не открывают пути — они усиливают то, что ты умеешь.</p>
+    <section><h2 class="sh">Основные пути</h2><div class="bpaths">${core.map(p => bookPath(book, p, c, whom)).join('')}</div></section>
+    <section><h2 class="sh">Отрасли</h2>${br.length ? `<div class="bpaths">${br.map(p => bookPath(book, p, c, whom)).join('')}</div>`
+      : '<p class="sub" style="margin:0">Пока ни одной. Увидь в мире необычное искусство — заклинание, приём, обряд — и изучи его: у книги, наставника или долгим наблюдением.</p>'}</section>
+    ${leads.length ? `<section><h2 class="sh">Следы</h2><ul class="leads">${leads.map(l => `<li><span class="nm">${esc(l.what)}</span>${l.source ? `<span class="kd">${esc(l.source)}</span>` : ''}
+      <span class="ds">${l.studied ? `${QUILL('var(--ink)', 16, 18)} изучено — Летописец пишет отрасль…` : esc(l.hint || 'Узнай больше: книга, наставник, долгое наблюдение.')}</span></li>`).join('')}</ul></section>` : ''}
+    <button class="tbtn" data-pre="Система, ">Спросить Систему…</button>`;
+}
+
+const EFF = { damage: 'урон', heal: 'лечение', shield: 'щит', buff: 'усиление', debuff: 'ослабление', control: 'оглушение' };
+const BON = { hp: 'макс. HP', mp: 'макс. MP', ac: 'КБ', melee: 'урон вблизи', ranged: 'урон издали', spell: 'сила чар', heal: 'сила лечения', init: 'инициатива' };
+function abilStats(a) {
+  if (a.kind === 'passive') return Object.entries(a.bonus || {}).filter(([, v]) => v).map(([k, v]) => `${BON[k] || k} +${v}`).join(', ');
+  const e = EFF[a.effect];
+  const pw = !e ? '' : a.effect === 'control' ? `${e} ${a.power} ход.` : (a.effect === 'buff' || a.effect === 'debuff') ? `${e} ${a.power}` : `${e} ${a.power}`;
+  return [pw && pw + (a.scale ? ' +' + a.scale : ''), a.mp ? a.mp + ' MP' : ''].filter(Boolean).join(' · ');
+}
 function memberSheet(state, c, info) {
   const d20 = state.rule_mode === 'd20', hero = c.id === state.player_id, fn = firstName(c.name);
   const whom = hero ? '' : fn + ' ';
   const abs = c.abilities || [];
   const abil = a => {
-    const kd = [a.kind === 'active' ? 'активная' : 'пассивная', a.cost, a.cooldown && 'перезарядка ' + a.cooldown].filter(Boolean).join(' · ');
+    const kd = [a.kind === 'active' ? 'активная' : 'пассивная', abilStats(a) || a.cost, a.cooldown && 'перезарядка ' + a.cooldown].filter(Boolean).join(' · ');
     const use = a.kind === 'active' ? `<button class="tbtn" data-pre="${hero ? `Применяю «${esc(a.name)}»: ` : `${esc(fn)}, используй «${esc(a.name)}»: `}">${hero ? 'Применить' : 'Приказать'}</button>` : '';
     return `<div class="abil"><div class="top"><span class="nm">${esc(a.name)}</span>${use}</div>
       <span class="kd">${esc(kd)}</span>${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`;
@@ -681,11 +716,6 @@ function memberSheet(state, c, info) {
     return `<div><span style="font-weight:600">${esc(i.name)}</span>${sub ? `<br><span class="sub">${esc(sub)}</span>` : ''}</div>
       <div style="color:var(--ink-soft)">×${i.qty}</div><div>${hero ? `<button class="tbtn" data-cmd="${act[1]} ${esc(i.name)}">${act[0]}</button>` : ''}</div>`;
   };
-  const offers = hero ? (state.ability_offers || []) : (info.offers || []);
-  const offer = o => `<div class="abil offer"><div class="top"><span class="nm">${esc(o.name)}${o.locked ? ' <span class="sub">· закреплено</span>' : ''}</span>
-      <span style="display:flex;gap:12px"><button class="tbtn" data-cmd="${o.locked ? 'открепи' : 'зафиксируй'} ${esc(whom)}${esc(o.name)}" title="${o.locked ? 'Снять фиксацию' : 'Оставить в списке при новом уровне'}">${o.locked ? 'Открепить' : 'Закрепить'}</button>
-      <button class="tbtn" data-cmd="возьми ${esc(whom)}${esc(o.name)}">Открыть</button></span></div>
-      <span class="kd">${o.kind === 'active' ? 'активная' : 'пассивная'}</span>${o.description ? `<span class="ds">${esc(o.description)}</span>` : ''}</div>`;
   const cond = c.conditions || [];
   const mult = info.exp_mult || 1;
   return `
@@ -707,10 +737,8 @@ function memberSheet(state, c, info) {
         <button class="tbtn" data-pre="Система, распредели ${esc(whom)}">Распределить…</button></div>` : ''}</section>
     ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(x => `<div>${condIco(x.name)}<span>${esc(x.name[0].toUpperCase() + x.name.slice(1))}</span><em>${turnsLeft(x.turns_left)}${x.potency ? ` · −${x.potency} HP` : ''}</em></div>`).join('')}</div></section>` : ''}
     <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : '<p class="sub" style="margin:0">Пока ни одной.</p>'}</section>
-    ${c.ability_points ? `<section><h2 class="sh">Можно открыть · ${c.ability_points} ${plural(c.ability_points, ['очко', 'очка', 'очков'])}</h2>
-      <div style="display:flex;flex-direction:column;gap:12px">${offers.map(offer).join('') || '<p class="sub" style="margin:0">Список появится после хода.</p>'}</div>
-      <p class="sub" style="margin:8px 0 0">Список перемешивается с новым уровнем; закреплённые останутся.</p></section>` : ''}
-    ${pathsSection(state, c, hero, whom)}
+    <section><h2 class="sh">Пути</h2><p style="margin:0 0 6px;font-size:16px">${c.ability_points ? `Свободно: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${pts(c.ability_points)}</b> способностей.` : 'Свободных очков способностей нет — они приходят с уровнем.'}</p>
+      <button class="tbtn" data-tab-go="book">Открыть Книгу путей</button></section>
     <section><h2 class="sh">Опись${hero ? '' : ' <span class="sub" style="font-family:var(--f-body);letter-spacing:0">— снаряжением спутник распоряжается сам</span>'}</h2>${(c.inventory || []).length ? `<div class="inv">${c.inventory.map(item).join('')}</div>` : '<p class="sub" style="margin:0">Пусто.</p>'}</section>
     ${hero ? '' : `<div style="text-align:center"><button class="tbtn" data-dismiss="${esc(c.name)}">Отпустить из отряда</button></div>`}`;
 }
@@ -731,6 +759,9 @@ function renderSheet(state) {
       return `<button data-who="${esc(id)}" aria-pressed="${id === sheetWho}" title="${esc(c.name)}"><span class="oval sm" aria-hidden="true" style="color:${id === state.player_id ? 'var(--rubric-hi)' : inkOf(c.name)}">${esc(initial(c.name))}</span><span>${esc(firstName(c.name))}</span>${c.attr_points || c.ability_points ? '<i class="dotp" title="есть свободные очки"></i>' : ''}</button>`;
     }).join('')}<span class="sub">${party.length} / ${state.party_max || 4}</span></nav>` : '';
   $('#paneHero').innerHTML = sw + memberSheet(state, who, (state.party_info || {})[sheetWho] || {});
+  $('#paneBook').innerHTML = bookPane(state, sw);
+  const bp = (state.book && state.book.points) || {};
+  $('#bookN').textContent = party.some(id => bp[id]) ? '•' : '';
 
   // ---- сцена: отряд, противники, остальные ----
   const present = (state.present || []).filter(i => i !== state.player_id && state.characters[i]);
@@ -794,6 +825,7 @@ function renderSheet(state) {
 }
 $('#sheet').addEventListener('click', async e => {
   const w = e.target.closest('[data-who]'); if (w) { sheetWho = w.dataset.who; renderSheet(st); return; }
+  const tg = e.target.closest('[data-tab-go]'); if (tg) { selectTab(tg.dataset.tabGo); return; }
   const wo = e.target.closest('[data-who-open]'); if (wo) { sheetWho = wo.dataset.whoOpen; selectTab('hero'); renderSheet(st); return; }
   const dm = e.target.closest('[data-dismiss]');
   if (dm) {

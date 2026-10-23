@@ -1,5 +1,5 @@
 """The System as a conversational agent: answers the player's questions about the rules, the hero's sheet,
-the party and the magic paths, and may request one action. Code checks and performs the action — the agent
+the party and the Book of paths, and may request one action. Code checks and performs the action — the agent
 never decides on its own whether a requirement is met (that status is computed and handed to it)."""
 from __future__ import annotations
 import json
@@ -11,18 +11,19 @@ KNOWLEDGE = f"""Ты — Система: безличный интерфейс �
 
 Что ты знаешь и объясняешь:
 - Проверки: по атрибутам ({', '.join(ATTRS)}). Режим d20 — бросок d20 + мягкий бонус от атрибута против сложности; режим «Система» — сравнение атрибута со сложностью без броска.
+- Атрибуты — усилители: Сила — урон в ближнем бою; Ловкость — точность, стрельба, КБ; Выносливость — макс. здоровье; Разум — учёная магия и макс. мана; Воля — вера, лечение, сопротивление чарам; Влияние — голос и усиление союзников. Каждые 2 пункта выше 10 дают +1 к тому, что атрибут усиливает.
 - Опыт: за свои удачные проверки и попадания; за поверженного врага — всем членам отряда поровну. Новый уровень: +5 HP, +3 MP, +2 очка атрибутов, +1 очко способностей.
-- Очки атрибутов вкладывает игрок («Система, распредели Сила +1»), очки способностей — на способности из списка предложений или на ступени путей магии.
-- Отряд: до {config.PARTY_MAX} вместе с героем. Спутник вступает по своей воле, начинает с 1-го уровня; его очки распределяет игрок, снаряжением спутник распоряжается сам. Отстающие спутники получают опыт с множителем 1,5 за каждый уровень разницы с героем (не больше ×{config.EXP_CATCHUP_MAX:g}).
-- Пути магии мира: у каждого пути три ступени. Требования ступени: уровень, главный атрибут пути, очки способностей и сюжетное условие (наставник, книга, ритуал — его выполнение отмечает история). Не больше {G.MAX_PATHS} путей на персонажа. Ступени открываются по порядку.
+- Очки атрибутов вкладывает игрок («Система, распредели Сила +1»). Очки способностей тратятся ТОЛЬКО в Книге путей.
+- Книга путей. Основные пути есть в любом мире: Воин, Маг, Тень, Дух, Следопыт (в этом мире могут называться иначе), по пять рангов; ранг стоит очки способностей и даёт способность. Отрасли — узкие искусства, растущие из основных путей: герой видит что-то в мире (след в Книге), изучает это в истории (книга, наставник, наблюдение) — и Система открывает отрасль из трёх ступеней. Ступени требуют ранга основного пути и очков; ступень III — ещё и сюжетного события. Ранги и ступени открываются по порядку.
+- Отряд: до {config.PARTY_MAX} вместе с героем. Спутник вступает по своей воле, начинает с 1-го уровня и одним очком способностей; его очки распределяет игрок, снаряжением спутник распоряжается сам. Отстающие спутники получают опыт с множителем 1,5 за каждый уровень разницы с героем (не больше ×{config.EXP_CATCHUP_MAX:g}).
 
 Что ты можешь сделать (только если игрок прямо просит, и только одно действие за ответ):
-- unlock_path — открыть следующую ступень пути для героя или спутника;
-- take_ability — открыть способность из списка предложений;
+- unlock_path — открыть следующий ранг основного пути или ступень отрасли для героя или спутника;
 - assign — вложить очки атрибутов.
 Код проверит требования и выполнит действие или откажет; поэтому не обещай результат, а говори «запрашиваю».
 
-Чего ты НЕ можешь: выдавать предметы и деньги, лечить, менять уровень или опыт, решать за рассказчика, что случится в сюжете, отмечать сюжетные условия выполненными, раскрывать тайны NPC и характеристики неосмотренных противников. На такие просьбы вежливо отказывай и объясняй, как этого добиться в игре.
+Чего ты НЕ можешь: выдавать предметы и деньги, лечить, менять уровень или опыт, решать за рассказчика, что случится в сюжете, отмечать сюжетные условия выполненными, открывать отрасли (они открываются только через историю), раскрывать тайны NPC и характеристики неосмотренных противников. На такие просьбы вежливо отказывай и объясняй, как этого добиться в игре.
+Если игрок спрашивает о пути, которого нет в Книге (например, «путь берсерка»), скажи, что такой отрасли он пока не открыл, предложи ближайший основной путь и объясни, как её найти: увидеть такое искусство в мире и изучить его.
 Требования считает код — смотри блок «Статус путей» и не спорь с ним. Не выдумывай пути, способности и числа, которых нет в данных ниже."""
 
 SCHEMA = {
@@ -30,7 +31,7 @@ SCHEMA = {
     "properties": {
         "reply": {"type": "string", "minLength": 1, "maxLength": 1500},
         "action": {"type": "object", "required": ["type"], "properties": {
-            "type": {"type": "string", "enum": ["none", "unlock_path", "take_ability", "assign"]},
+            "type": {"type": "string", "enum": ["none", "unlock_path", "assign"]},
             "who": {"type": "string"}, "path": {"type": "string"}, "ability": {"type": "string"},
             "attr": {"type": "string"}, "amount": {"type": "integer", "minimum": 1, "maximum": 5}}},
     },
@@ -38,7 +39,8 @@ SCHEMA = {
 
 
 def sheet(scene: Scene, c) -> str:
-    abil = ", ".join(f"{a.name} ({'акт.' if a.kind == 'active' else 'пасс.'}{', ' + a.cost if a.cost else ''})" for a in c.abilities) or "нет"
+    abil = ", ".join(f"{a.name} ({'акт.' if a.kind == 'active' else 'пасс.'}{', ' + M.ability_stats(a) if M.ability_stats(a) else ''})"
+                     for a in c.abilities) or "нет"
     paths = ", ".join(f"{p.name} {G.ROMAN[c.paths[p.id]]}" for p in scene.paths if c.paths.get(p.id)) or "нет"
     return (f"{c.name}{' (герой)' if c.is_player else ' (спутник)'}: ур. {c.level}, HP {c.hp}/{c.max_hp}, MP {c.mp}/{c.max_mp}, "
             f"EXP {c.exp}/{c.exp_next}, КБ {C.ac(c)}. Атрибуты: " + ", ".join(f"{k} {v}" for k, v in c.attrs.items())
@@ -51,27 +53,30 @@ def sheet(scene: Scene, c) -> str:
 def context(scene: Scene) -> str:
     party = [scene.characters[i] for i in M.party_ids(scene)]
     parts = ["# Отряд", *[sheet(scene, c) for c in party]]
-    offers = M.ability_offers(scene, 3) if scene.player.ability_points > 0 else []
-    if offers:
-        parts.append("Способности к открытию у героя: " + "; ".join(f"{x['name']} — {x.get('description') or ''}" for x in offers))
-    parts.append("\n# Пути магии этого мира")
+    parts.append("\n# Книга путей этого мира")
     for p in scene.paths:
-        parts.append(f"## {p.name} (атрибут {p.attr}) — {p.description}")
+        kind = "основной путь" if p.core else "отрасль от " + ", ".join(
+            f"{(G.get_path(scene, pid) or p).name} {G.ROMAN[r]}" for pid, r in p.parents.items())
+        parts.append(f"## {p.name} ({kind}) — {p.description}")
         for t in p.tiers:
-            reqs = "; ".join(r.text if r.kind == "story" else
-                             (f"уровень {r.value}" if r.kind == "level" else f"{r.attr} {r.value}" if r.kind == "attr"
-                              else f"очков способностей {r.value}") for r in t.reqs)
-            parts.append(f"- ступень {G.ROMAN[t.tier]}: {reqs}. Даёт: " +
-                         "; ".join(f"{a.name} ({'акт.' if a.kind == 'active' else 'пасс.'}{', ' + a.cost if a.cost else ''}) — {a.description}" for a in t.abilities))
+            reqs = "; ".join(G.req_status(scene, scene.player, r)[1].split(" (")[0] for r in t.reqs)
+            parts.append(f"- {'ранг' if p.core else 'ступень'} {G.ROMAN[t.tier]} [{reqs}]: " +
+                         "; ".join(f"{a.name} ({'акт.' if a.kind == 'active' else 'пасс.'}, {M.ability_stats(a)}) — {a.description}"
+                                   for a in t.abilities))
+    leads = [l for l in scene.leads if not l.branch]
+    if leads:
+        parts.append("\n# Следы (видели, но отрасль ещё не открыта)")
+        parts += [f"- {l.what}" + (f" ({l.source})" if l.source else "") + (" — изучено, отрасль пишется" if l.studied else " — не изучено")
+                  for l in leads]
     parts.append("\n# Статус путей (посчитано кодом — это истина)")
     for c in party:
         for p in scene.paths:
             s = G.tier_status(scene, c, p)
             if s["done"]:
-                parts.append(f"- {c.name} / {p.name}: все ступени пройдены")
-            else:
-                parts.append(f"- {c.name} / {p.name} / ступень {G.ROMAN[s['tier']]}: "
-                             + ("МОЖНО ОТКРЫТЬ" if s["ok"] else "закрыта, не хватает: " + "; ".join(s["missing"])))
+                parts.append(f"- {c.name} / {p.name}: пройден полностью")
+            elif s["ok"] or c.paths.get(p.id) or p.core:
+                parts.append(f"- {c.name} / {p.name} / {'ранг' if p.core else 'ступень'} {G.ROMAN[s['tier']]}: "
+                             + ("МОЖНО ОТКРЫТЬ" if s["ok"] else "закрыто, не хватает: " + "; ".join(s["missing"])))
     tail = [f"{e.who + ': ' if e.who else ''}{e.text[:220]}" for e in scene.log[-8:] if e.kind in ("narration", "speech", "player")]
     if tail:
         parts.append("\n# Последние события\n" + "\n".join(tail))
@@ -89,8 +94,6 @@ def perform(scene: Scene, action: dict) -> str | None:
     if t == "unlock_path":
         ok, msg = G.unlock_tier(scene, who, action.get("path") or "")
         return ("✔ " if ok else "Отказано: ") + msg
-    if t == "take_ability":
-        return M.take_ability(scene, action.get("ability") or "", who)
     if t == "assign":
         attr = M.resolve_attr(action.get("attr") or "")
         n = int(action.get("amount") or 1)
@@ -99,13 +102,16 @@ def perform(scene: Scene, action: dict) -> str | None:
         if n > who.attr_points:
             return f"Отказано: у {who.name} {who.attr_points} очк. атрибутов."
         who.attr_points -= n; who.attrs[attr] += n
-        return f"✔ {who.name}: {attr} {who.attrs[attr] - n}→{who.attrs[attr]}. Осталось очков: {who.attr_points}."
+        extra = M.sync_derived(who)
+        return (f"✔ {who.name}: {attr} {who.attrs[attr] - n}→{who.attrs[attr]}. Осталось очков: {who.attr_points}."
+                + (" " + "; ".join(extra) + "." if extra else ""))
     return None
 
 
 async def ask(llm, scene: Scene, question: str, seed: int = -1) -> dict:
     """One agent turn. Returns {text, stats}; never advances the story turn."""
-    calls = await G.ensure_paths(llm, scene, seed=seed)
+    calls = []
+    G.ensure_core(scene)
     user = context(scene) + f"\n\n# Вопрос игрока\n{question.strip()}"
     content, st = await llm.complete(render(KNOWLEDGE, [{"role": "user", "content": user}], open_model=""), 700,
                                      stop=["<turn|>", "<|turn>"], temperature=0.3, seed=seed, json_schema=SCHEMA)
