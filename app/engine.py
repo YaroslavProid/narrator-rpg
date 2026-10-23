@@ -118,7 +118,21 @@ class TurnEngine:
                      "locked": bool(x.get("locked"))}
                     for x in M.ability_offers(scene, 3)
                 ] if scene.player.ability_points > 0 else [],
+                "party": M.party_ids(scene), "party_max": config.PARTY_MAX, "party_info": self.party_info(scene),
                 "characters": chars}
+
+    def party_info(self, scene):
+        """Per companion: EXP catch-up multiplier, open ability offers, whether the AI is still filling the card."""
+        out = {}
+        for cid in scene.party:
+            c = scene.characters.get(cid)
+            if not c:
+                continue
+            out[cid] = {"exp_mult": M.catchup_mult(scene, c), "filling": cid in scene.pending_fill,
+                        "offers": [{"name": x["name"], "kind": x.get("kind"), "description": x.get("description") or "",
+                                    "locked": bool(x.get("locked"))}
+                                   for x in M.ability_offers(scene, 3, c)] if c.ability_points > 0 else []}
+        return out
 
     def payload(self, scene):
         """Full scene view for the client (initial load and `reload`)."""
@@ -203,6 +217,40 @@ class TurnEngine:
         await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
         return st
 
+    async def fill_party(self, scene, emit=None):
+        """A new companion's card is often a sketch (name + two words). After the turn, ask the Director to
+        complete it consistently with the story; the player sees the result in the party sheet."""
+        if not scene.pending_fill:
+            return
+        from . import director as D
+        async with self.lock:
+            while scene.pending_fill:
+                cid = scene.pending_fill[0]
+                c = scene.characters.get(cid)
+                if not c or cid not in scene.party:
+                    scene.pending_fill.pop(0)
+                    continue
+                order = (f"{c.name} только что вступил(а) в отряд героя. Заполни карточку {c.name} полностью и "
+                         f"согласованно с описанием и тем, что о нём известно из сцены: вид/класс (kind), внешность и роль "
+                         f"(description), характер, манера речи, атрибуты (3–18, по роли), 1–3 способности (активные и "
+                         f"пассивные), снаряжение по роли (оружие и броня). Уже заданное не противоречь, только дополняй. "
+                         f"Других персонажей не трогай.")
+                try:
+                    res = await D.run_director(self.llm, scene, order, seed=self.seed(scene, 91))
+                    text = f"⟦ ОТРЯД ⟧ Карточка {c.name} дописана.\n" + (res.get("text") or "").strip()
+                except Exception as e:
+                    text = f"⟦ ОТРЯД ⟧ Не удалось дописать карточку {c.name}: {type(e).__name__}: {e}"
+                scene.pending_fill.pop(0)
+                c.side = "party"; c.reveal.kind = c.reveal.attrs = c.reveal.abilities = True
+                scene.log.append(Event(turn=scene.turn, kind="system", who="Система", text=text, witnesses=[scene.player_id]))
+                store.save_scene(scene)
+                if emit:
+                    try:
+                        await emit({"type": "segment", "id": next(_seg), "kind": "system", "who": "Система", "text": text})
+                        await emit({"type": "memory", "text": f"карточка {c.name} заполнена", "state": self.state(scene)})
+                    except Exception:
+                        pass
+
     async def warm(self, scene):
         async with self.lock:
             try:
@@ -217,7 +265,8 @@ class TurnEngine:
                 "rng_calls": scene.rng_calls, "summaries": [s.model_dump() for s in scene.summaries],
                 "facts": [f.model_dump() for f in scene.facts], "archived_upto": scene.archived_upto,
                 "archived_turn": scene.archived_turn, "injected": list(scene.memory_injected),
-                "stats_len": len(scene.stats), "combat": scene.combat.model_dump()}
+                "stats_len": len(scene.stats), "combat": scene.combat.model_dump(),
+                "party": list(scene.party), "pending_fill": list(scene.pending_fill)}
 
     def rewind(self, scene: Scene, to_turn: int) -> bool:
         """Undo every turn >= to_turn (restore the snapshot taken when turn `to_turn` started)."""
@@ -233,6 +282,7 @@ class TurnEngine:
         scene.archived_upto = s["archived_upto"]; scene.archived_turn = s["archived_turn"]
         scene.memory_injected = s["injected"]; scene.stats = scene.stats[:s["stats_len"]]
         scene.combat = Combat.model_validate(s.get("combat") or {})
+        scene.party = list(s.get("party") or []); scene.pending_fill = list(s.get("pending_fill") or [])
         scene.turn = s["turn"]; scene.snapshots = scene.snapshots[:idx]
         if self.mem:
             try: self.mem.delete_from(scene.id, to_turn)
@@ -497,6 +547,27 @@ class TurnEngine:
                 act += 1
         return act
 
+    INVITE_RE = re.compile(r"отряд|присоедин|пойд[её]шь со мной|идём со мной|идем со мной|пошли со мной|составь компани")
+
+    def invite_hint(self, scene, text) -> str:
+        """In a long story the tag docs sit ~20k tokens back and the model forgets <join>: when the player invites
+        someone, remind it right in this turn (only then, so it never nudges NPCs into joining on their own)."""
+        if not text or not self.INVITE_RE.search(text.lower()):
+            return ""
+        low = text.lower()
+        for cid in scene.present:
+            c = scene.characters.get(cid)
+            if not c or c.is_player or cid in scene.party:
+                continue
+            stem = c.name.lower()[: max(3, len(c.name) - 2)]
+            if stem in low:
+                if len(M.party_ids(scene)) >= config.PARTY_MAX:
+                    return f"[ОТРЯД] Игрок зовёт {c.name}, но отряд полон ({config.PARTY_MAX}) — {c.name} не может вступить."
+                return (f"[ОТРЯД] Игрок зовёт {c.name} в отряд. Реши по характеру {c.name}. Если соглашается — "
+                        f"ОБЯЗАТЕЛЬНО поставь <join who=\"{c.name}\"/> сразу после ответа, иначе в отряд не попадёт. "
+                        f"Если отказывается — тег не ставь.")
+        return ""
+
     def mark_active(self, scene, *ids_or_names):
         for x in ids_or_names:
             if not x: continue
@@ -513,7 +584,7 @@ class TurnEngine:
             return []
         msgs = []
         for cid in list(scene.present):
-            if cid == scene.player_id:
+            if cid == scene.player_id or cid in scene.party:
                 continue
             c = scene.characters[cid]
             # seed last_active for characters that never got a stamp
@@ -550,7 +621,7 @@ class TurnEngine:
     async def _turn_body(self, scene: Scene, text: str | None, emit) -> dict:
         t0 = time.time()
         introduced, last_tier, combat = self._signals(scene)
-        scene.turn += 1; scene.turn_exp = 0
+        scene.turn += 1; scene.turn_exp = 0; scene.turn_exp_by = {}
         calls = []
         # auto-leave inactive NPCs before budgeting
         prune_msgs = self.prune_inactive(scene)
@@ -582,6 +653,9 @@ class TurnEngine:
         turn_hint = budget.hint
         if dnote:
             turn_hint = (turn_hint + " " if turn_hint else "") + f"[ЗАМЕТКА ДИРЕКТОРА] {dnote}"
+        invite = self.invite_hint(scene, text)
+        if invite:
+            turn_hint = (turn_hint + " " if turn_hint else "") + invite
         scene.turns.append({"role": "user", "content": P.player_message(scene, M.state_line(scene), text,
                                                                          hint=turn_hint, memories=mem_lines)})
         transcript = []
@@ -715,10 +789,8 @@ class TurnEngine:
             r = M.check(scene, who, a.get("skill", ""), a.get("dc", 12))
             text = ("🎲 " if scene.rule_mode == "d20" else "⚙️ ") + r["text"]
             msgs = []
-            if r["success"] and who.is_player:
-                gain = 5 + max(0, r["dc"] - 10)
-                M.grant_exp(scene, who, min(M.LIMITS["exp_turn"] - scene.turn_exp, gain), msgs)
-                scene.turn_exp += gain
+            if r["success"]:
+                M.award_exp(scene, who, 5 + max(0, r["dc"] - 10), msgs)
             full = text + ("\n" + "\n".join(msgs) if msgs else "")
             await self.sys_msg(emit, scene, full, "roll")
             transcript.append({"kind": "roll", "text": full})
@@ -763,12 +835,41 @@ class TurnEngine:
             self.log(scene, "system", text, "Система")
             return text
         if tag.name == "introduce":
-            c = await self._introduce(scene, a["name"], a.get("desc", ""), emit, transcript)
-            return f"В сцену входит {c.name}: {c.description or 'новый персонаж'}."
+            hostile = (a.get("side") or "").lower() in ("враг", "враги", "hostile", "enemy", "foe")
+            try:
+                count = max(1, min(6, int(a.get("count") or 1)))
+            except ValueError:
+                count = 1
+            base = re.sub(r"\s*\d+$", "", a["name"]).strip() or a["name"]   # «Волк 1» + count=3 → «Волк 1…3», not «Волк 1 1»
+            names = [a["name"]] if count == 1 else [f"{base} {i}" for i in range(1, count + 1)]
+            made = []
+            for nm in names:
+                c = await self._introduce(scene, nm, a.get("desc", ""), emit, transcript, exact=count > 1)
+                if hostile and not M.in_party(scene, c):
+                    c.side = "hostile"
+                made.append(c)
+            if count == 1:
+                return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}."
+            return f"В сцену входят: {', '.join(c.name for c in made)}. Обращайся к каждому по имени."
+        if tag.name in ("join", "part"):
+            c = M.resolve_character(scene, a.get("who", ""))
+            if not c:
+                return f"Нет персонажа «{a.get('who')}»."
+            ok, msg = (M.join_party if tag.name == "join" else M.leave_party)(scene, c)
+            if ok:
+                await self.sys_msg(emit, scene, "⟦ ОТРЯД ⟧ " + msg)
+                transcript.append({"kind": "system", "text": msg})
+                self.log(scene, "system", "⟦ ОТРЯД ⟧ " + msg, "Система")
+                self.mark_active(scene, c.id)
+                return msg + (" Опиши, как он присоединяется." if tag.name == "join" else " Опиши уход.")
+            return msg + (" Покажи это в повествовании." if tag.name == "join" else "")
         if tag.name == "leave":
             c = M.resolve_character(scene, a.get("who", ""), only_present=True)
             if not c or c.is_player:
                 return "Этого персонажа нет в сцене."
+            if c.id in scene.party:
+                return (f"{c.name} — спутник героя и идёт с ним. Если {c.name} уходит из отряда насовсем — "
+                        f"<part who=\"{c.name}\"/>.")
             scene.present.remove(c.id)
             self.log(scene, "system", f"{c.name} уходит.", "Система")
             return f"{c.name} покидает сцену."
@@ -780,7 +881,17 @@ class TurnEngine:
             if scene.rule_mode == "система" and not scene.combat.active:
                 # still allow attack; combat.attack uses no-dice path
                 pass
+            hp_before = tgt.hp
+            for x, y in ((atk, tgt), (tgt, atk)):      # whoever fights the party is a foe
+                if M.in_party(scene, x) and not M.in_party(scene, y):
+                    y.side = "hostile"
             r = C.attack(scene, atk, tgt, a.get("weapon", ""))
+            if r.get("hit") and M.in_party(scene, atk) and not M.in_party(scene, tgt):
+                M.award_exp(scene, atk, config.EXP_HIT, r["msgs"])
+            if hp_before > 0 and tgt.hp == 0 and not M.in_party(scene, tgt):
+                r["msgs"].append(f"⟦ ПОБЕДА ⟧ {tgt.name} повержен(а) — опыт всему отряду.")
+                for cid in M.party_ids(scene):
+                    M.award_exp(scene, scene.characters[cid], M.kill_exp(tgt), r["msgs"], capped=False)
             full = r["text"]
             if r["msgs"]:
                 full += "\n" + "\n".join(r["msgs"])
@@ -800,8 +911,13 @@ class TurnEngine:
                 ids = []
                 for f in foes:
                     c = M.resolve_character(scene, f) or await self._introduce(scene, f, "", emit, transcript)
+                    if not M.in_party(scene, c):
+                        c.side = "hostile"
                     ids.append(c.id)
-                text = C.start_combat(scene, ids or [i for i in scene.present if i != scene.player_id][:4])
+                if scene.combat.active:     # a fight already started by an attack: add newcomers, keep the order
+                    text = C.join_combat(scene, ids)
+                else:
+                    text = C.start_combat(scene, ids or [i for i in scene.present if i != scene.player_id][:4])
                 await self.sys_msg(emit, scene, text, "roll")
                 transcript.append({"kind": "roll", "text": text})
                 self.log(scene, "system", text, "Система")
@@ -831,8 +947,10 @@ class TurnEngine:
             return text
         return "Неизвестное действие."
 
-    async def _introduce(self, scene, name, desc, emit, transcript):
-        ex = M.resolve_character(scene, name)
+    async def _introduce(self, scene, name, desc, emit, transcript, exact=False):
+        # exact: members of a pack («Лесная тварь 2») must not fuzzy-match an existing «Лесная тварь 1»
+        ex = (next((c for c in scene.characters.values() if M.norm(c.name) == M.norm(name)), None) if exact
+              else M.resolve_character(scene, name))
         if ex and not ex.is_player:
             if ex.id not in scene.present:
                 scene.present.append(ex.id)

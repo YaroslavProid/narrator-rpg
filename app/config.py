@@ -37,6 +37,13 @@ CYR_MIN = _float("NARRATOR_CYR_MIN", 0.7)              # below this share of Cyr
 LENGTH_MULT = _float("NARRATOR_LENGTH_MULT", 1.0)      # default per-scene turn length multiplier
 INACTIVE_LEAVE = _int("NARRATOR_INACTIVE_LEAVE", 5)    # auto-<leave> after N quiet turns (0 = off)
 
+# --- party & experience ---
+PARTY_MAX = _int("NARRATOR_PARTY_MAX", 4)              # party size including the hero
+EXP_CATCHUP_BASE = _float("NARRATOR_EXP_CATCHUP", 1.5) # companion EXP x base**(hero level - companion level)
+EXP_CATCHUP_MAX = _float("NARRATOR_EXP_CATCHUP_MAX", 4.0)
+EXP_KILL = _int("NARRATOR_EXP_KILL", 20)               # per defeated foe, to every party member (+5 per foe level above 1)
+EXP_HIT = _int("NARRATOR_EXP_HIT", 3)                  # per successful hit, to the attacker
+
 # --- memory / context ---
 MEMORY = os.environ.get("NARRATOR_MEMORY", "1") != "0"
 EMBED_DIR = Path(os.environ.get("NARRATOR_EMBED_DIR", ROOT / "models" / "multilingual-e5-small"))

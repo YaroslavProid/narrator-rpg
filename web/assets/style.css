@@ -446,6 +446,17 @@ body.busy .send .wax { animation: spin 5s linear infinite; }
 .conds em { margin-left: auto; color: var(--ink-soft); }
 .near { display: flex; gap: 14px; padding-bottom: 14px; border-bottom: 1px dotted var(--ink-faint); }
 .near:last-child { border-bottom: 0; }
+.near.down { opacity: .55; }
+.party-sw { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px dotted var(--ink-faint); }
+.party-sw button { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 2px; background: none; border: 0; cursor: pointer;
+  font: 700 13px/1.1 var(--f-sc); letter-spacing: .06em; color: var(--ink-soft); }
+.party-sw button .oval { transition: box-shadow .2s; }
+.party-sw button[aria-pressed="true"] { color: var(--rubric); }
+.party-sw button[aria-pressed="true"] .oval { box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 4px var(--orn), 0 0 0 2px var(--rubric); }
+.party-sw button:hover { color: var(--ink); }
+.party-sw .dotp { position: absolute; top: 2px; right: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--rubric); box-shadow: 0 0 0 2px var(--paper); }
+.party-sw > .sub { margin-left: auto; align-self: center; }
+.abil.offer { padding: 8px 10px; border: 1px dashed var(--ink-faint); }
 .near .bd { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .near .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .near .note { font: 400 13px/1 var(--f-sc); letter-spacing: .1em; color: var(--ink-soft); }

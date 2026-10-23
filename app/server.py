@@ -47,9 +47,14 @@ app.mount("/assets", StaticFiles(directory=WEB / "assets"), name="assets")
 def get_scene(sid):
     if sid not in state["scenes"]:
         try:
-            state["scenes"][sid] = store.load_scene(sid)
+            sc = store.load_scene(sid)
         except FileNotFoundError:
             raise HTTPException(404, "сцена не найдена")
+        if "<join" not in sc.system_prompt:   # scenes from before the party mechanic: teach the narrator the new tags
+            from . import prompts
+            sc.system_prompt = prompts.build_system(sc)
+            store.save_scene(sc)
+        state["scenes"][sid] = sc
     return state["scenes"][sid]
 
 
@@ -250,6 +255,10 @@ async def ws(websocket: WebSocket, sid: str):
             except Exception:
                 state["subs"].get(sid, set()).discard(w)
 
+    async def after_turn():
+        await eng.fill_party(sc, emit)      # a new companion's card first, then memory archiving
+        await eng.background(sc, emit)
+
     await websocket.send_text(json.dumps({"type": "hello", "state": eng.state(sc), "busy": state["turn_running"]},
                                          ensure_ascii=False))
     if sc.turns and not eng.lock.locked():
@@ -289,7 +298,7 @@ async def ws(websocket: WebSocket, sid: str):
                         continue
                 finally:
                     state["turn_running"] = False
-                asyncio.create_task(eng.background(sc, emit))
+                asyncio.create_task(after_turn())
             except WebSocketDisconnect:
                 raise
             except Exception as e:

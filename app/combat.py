@@ -93,6 +93,27 @@ def start_combat(scene: Scene, ids: list[str]) -> str:
     return "\n".join(lines)
 
 
+def join_combat(scene: Scene, ids: list[str]) -> str:
+    """Combat is already running: roll initiative only for newcomers and slot them in without resetting turns."""
+    cb = scene.combat
+    have = {o.id for o in cb.order}
+    added = []
+    for i in ids:
+        if i in have or i not in scene.characters:
+            continue
+        c = scene.characters[i]
+        if i not in scene.present:
+            scene.present.append(i)
+        cb.order.append(Combatant(id=i, initiative=M.rng(scene).randint(1, 20) + M.soft_weight(c.attrs.get("Ловкость", 10), 10)))
+        added.append(f"{c.name} {cb.order[-1].initiative}")
+    cur = cb.order[cb.current].id if cb.order else None
+    cb.order.sort(key=lambda x: -x.initiative)
+    cb.current = next((k for k, o in enumerate(cb.order) if o.id == cur), 0)
+    if not added:
+        return combat_status(scene)
+    return f"⟦ БОЙ · раунд {cb.round} ⟧ В бой вступают: {', '.join(added)}. Ход: {scene.characters[cb.order[cb.current].id].name}."
+
+
 def end_combat(scene: Scene) -> str:
     scene.combat = Combat()
     return "⟦ БОЙ ОКОНЧЕН ⟧"

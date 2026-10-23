@@ -642,18 +642,16 @@ const COND_ICON = {
 const condIco = n => COND_ICON[n] || '<svg aria-hidden="true" width="18" height="12" viewBox="0 0 18 12"><path d="M1 6 C 4 1, 14 1, 17 6 C 14 11, 4 11, 1 6 Z" fill="none" stroke="var(--ink)" stroke-width="1.2"/><circle cx="9" cy="6" r="2.2" fill="var(--ink)"/></svg>';
 const turnsLeft = n => `ещё ${n} ${plural(n, ['ход', 'хода', 'ходов'])}`;
 
-function renderSheet(state) {
-  if (!state) return;
-  st = state;
-  const p = state.characters[state.player_id]; if (!p) return;
-  const d20 = state.rule_mode === 'd20';
-  $('#vitals').innerHTML = `${esc(p.hp)} / ${esc(p.max_hp)}<span class="mini"><i style="width:${pct(p.hp, p.max_hp)}%"></i></span>`;
-
-  // ---- герой ----
-  const abs = p.abilities || [];
+let sheetWho = null;   // whose sheet the «Герой» ribbon shows: the hero or a companion
+const firstName = n => String(n || '').split(/\s+/)[0];
+function memberSheet(state, c, info) {
+  const d20 = state.rule_mode === 'd20', hero = c.id === state.player_id, fn = firstName(c.name);
+  const whom = hero ? '' : fn + ' ';
+  const abs = c.abilities || [];
   const abil = a => {
     const kd = [a.kind === 'active' ? 'активная' : 'пассивная', a.cost, a.cooldown && 'перезарядка ' + a.cooldown].filter(Boolean).join(' · ');
-    return `<div class="abil"><div class="top"><span class="nm">${esc(a.name)}</span>${a.kind === 'active' ? `<button class="tbtn" data-pre="Применяю «${esc(a.name)}»: ">Применить</button>` : ''}</div>
+    const use = a.kind === 'active' ? `<button class="tbtn" data-pre="${hero ? `Применяю «${esc(a.name)}»: ` : `${esc(fn)}, используй «${esc(a.name)}»: `}">${hero ? 'Применить' : 'Приказать'}</button>` : '';
+    return `<div class="abil"><div class="top"><span class="nm">${esc(a.name)}</span>${use}</div>
       <span class="kd">${esc(kd)}</span>${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`;
   };
   const item = i => {
@@ -661,49 +659,89 @@ function renderSheet(state) {
     const wearable = i.damage || i.armor || i.slot;
     const act = wearable ? (i.equipped ? ['Снять', 'сними'] : ['Надеть', 'экипируй']) : ['Использовать', 'используй'];
     return `<div><span style="font-weight:600">${esc(i.name)}</span>${sub ? `<br><span class="sub">${esc(sub)}</span>` : ''}</div>
-      <div style="color:var(--ink-soft)">×${i.qty}</div><div><button class="tbtn" data-cmd="${act[1]} ${esc(i.name)}">${act[0]}</button></div>`;
+      <div style="color:var(--ink-soft)">×${i.qty}</div><div>${hero ? `<button class="tbtn" data-cmd="${act[1]} ${esc(i.name)}">${act[0]}</button>` : ''}</div>`;
   };
-  const cond = p.conditions || [];
-  $('#paneHero').innerHTML = `
+  const offers = hero ? (state.ability_offers || []) : (info.offers || []);
+  const offer = o => `<div class="abil offer"><div class="top"><span class="nm">${esc(o.name)}${o.locked ? ' <span class="sub">· закреплено</span>' : ''}</span>
+      <span style="display:flex;gap:12px"><button class="tbtn" data-cmd="${o.locked ? 'открепи' : 'зафиксируй'} ${esc(whom)}${esc(o.name)}" title="${o.locked ? 'Снять фиксацию' : 'Оставить в списке при новом уровне'}">${o.locked ? 'Открепить' : 'Закрепить'}</button>
+      <button class="tbtn" data-cmd="возьми ${esc(whom)}${esc(o.name)}">Открыть</button></span></div>
+      <span class="kd">${o.kind === 'active' ? 'активная' : 'пассивная'}</span>${o.description ? `<span class="ds">${esc(o.description)}</span>` : ''}</div>`;
+  const cond = c.conditions || [];
+  const mult = info.exp_mult || 1;
+  return `
     <div style="display:flex;align-items:center;gap:16px">
-      <span class="oval" aria-hidden="true" style="color:var(--rubric-hi)">${esc(initial(p.name))}</span>
-      <div style="display:flex;flex-direction:column">
-        <span style="font:700 30px/1.1 var(--f-head)">${esc(p.name)}</span>
-        ${p.kind ? `<span style="font-size:17px;font-style:italic;color:var(--ink-soft)">${esc(p.kind)}</span>` : ''}
-        <span style="font:700 16px/1.3 var(--f-sc);letter-spacing:.1em;color:var(--rubric)">уровень ${p.level}</span>
+      <span class="oval" aria-hidden="true" style="color:${hero ? 'var(--rubric-hi)' : inkOf(c.name)}">${esc(initial(c.name))}</span>
+      <div style="display:flex;flex-direction:column;min-width:0">
+        <span style="font:700 30px/1.1 var(--f-head)">${esc(c.name)}</span>
+        ${c.kind ? `<span style="font-size:17px;font-style:italic;color:var(--ink-soft)">${esc(c.kind)}</span>` : ''}
+        <span style="font:700 16px/1.3 var(--f-sc);letter-spacing:.1em;color:var(--rubric)">уровень ${c.level}${hero ? '' : ' · спутник'}</span>
       </div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', p.hp, p.max_hp, 'hp')}${gauge('Мана', p.mp, p.max_mp, 'mp')}${gauge('Опыт', p.exp, p.exp_next, 'xp')}</div>
-    <section><h2 class="sh">Атрибуты</h2>${attrTable(p.attrs, d20)}
-      ${(p.attr_points || p.ability_points) ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:16px">
-        <span>Свободные очки: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${p.attr_points || 0}</b>${p.ability_points ? ` · способностей <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${p.ability_points}</b>` : ''}</span>
-        <span style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="tbtn" data-pre="Система, распредели ">Атрибуты…</button>
-          ${(p.ability_points) ? `<button class="tbtn" data-cmd="способности">Открыть список…</button>` : ''}
-        </span></div>` : ''}</section>
-    ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(c => `<div>${condIco(c.name)}<span>${esc(c.name[0].toUpperCase() + c.name.slice(1))}</span><em>${turnsLeft(c.turns_left)}${c.potency ? ` · −${c.potency} HP` : ''}</em></div>`).join('')}</div></section>` : ''}
-    <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : `<p class="sub" style="margin:0">Пока ни одной.${p.ability_points ? ` Есть <b>${p.ability_points}</b> очк. — можно открыть новые.` : ''}</p>`}${p.ability_points ? `<button class="tbtn" style="margin-top:8px" data-cmd="способности">Что можно открыть…</button>` : ''}</section>
-    <section><h2 class="sh">Опись</h2>${(p.inventory || []).length ? `<div class="inv">${p.inventory.map(item).join('')}</div>` : '<p class="sub" style="margin:0">Пусто.</p>'}</section>`;
+    ${info.filling ? `<p class="writing" style="margin:0;font-size:16px">${QUILL('var(--ink)', 22, 26).replace('<svg', '<svg class="quill"')}Летописец дописывает карточку<span class="dot1">.</span><span class="dot2">.</span><span class="dot3">.</span></p>` : ''}
+    <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', c.hp, c.max_hp, 'hp')}${gauge('Мана', c.mp, c.max_mp, 'mp')}${gauge('Опыт', c.exp, c.exp_next, 'xp')}
+      ${mult > 1 ? `<span class="sub">опыт ×${String(mult).replace('.', ',')} — догоняет героя</span>` : ''}</div>
+    ${!hero && c.description ? `<p style="margin:0;font-size:16px;line-height:1.5">${esc(c.description)}</p>` : ''}
+    <section><h2 class="sh">Атрибуты</h2>${attrTable(c.attrs, d20)}
+      ${c.attr_points ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:16px">
+        <span>Свободные очки: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${c.attr_points}</b></span>
+        <button class="tbtn" data-pre="Система, распредели ${esc(whom)}">Распределить…</button></div>` : ''}</section>
+    ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(x => `<div>${condIco(x.name)}<span>${esc(x.name[0].toUpperCase() + x.name.slice(1))}</span><em>${turnsLeft(x.turns_left)}${x.potency ? ` · −${x.potency} HP` : ''}</em></div>`).join('')}</div></section>` : ''}
+    <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : '<p class="sub" style="margin:0">Пока ни одной.</p>'}</section>
+    ${c.ability_points ? `<section><h2 class="sh">Можно открыть · ${c.ability_points} ${plural(c.ability_points, ['очко', 'очка', 'очков'])}</h2>
+      <div style="display:flex;flex-direction:column;gap:12px">${offers.map(offer).join('') || '<p class="sub" style="margin:0">Список появится после хода.</p>'}</div>
+      <p class="sub" style="margin:8px 0 0">Список перемешивается с новым уровнем; закреплённые останутся.</p></section>` : ''}
+    <section><h2 class="sh">Опись${hero ? '' : ' <span class="sub" style="font-family:var(--f-body);letter-spacing:0">— снаряжением спутник распоряжается сам</span>'}</h2>${(c.inventory || []).length ? `<div class="inv">${c.inventory.map(item).join('')}</div>` : '<p class="sub" style="margin:0">Пусто.</p>'}</section>
+    ${hero ? '' : `<div style="text-align:center"><button class="tbtn" data-dismiss="${esc(c.name)}">Отпустить из отряда</button></div>`}`;
+}
 
-  // ---- сцена ----
-  const present = (state.present || []).filter(i => i !== state.player_id);
+function renderSheet(state) {
+  if (!state) return;
+  st = state;
+  const p = state.characters[state.player_id]; if (!p) return;
+  const d20 = state.rule_mode === 'd20';
+  $('#vitals').innerHTML = `${esc(p.hp)} / ${esc(p.max_hp)}<span class="mini"><i style="width:${pct(p.hp, p.max_hp)}%"></i></span>`;
+
+  // ---- отряд: переключатель листов ----
+  const party = (state.party || [state.player_id]).filter(id => state.characters[id]);
+  if (!party.includes(sheetWho)) sheetWho = state.player_id;
+  const who = state.characters[sheetWho];
+  const sw = party.length > 1 ? `<nav class="party-sw" aria-label="Члены отряда">${party.map(id => {
+      const c = state.characters[id];
+      return `<button data-who="${esc(id)}" aria-pressed="${id === sheetWho}" title="${esc(c.name)}"><span class="oval sm" aria-hidden="true" style="color:${id === state.player_id ? 'var(--rubric-hi)' : inkOf(c.name)}">${esc(initial(c.name))}</span><span>${esc(firstName(c.name))}</span>${c.attr_points || c.ability_points ? '<i class="dotp" title="есть свободные очки"></i>' : ''}</button>`;
+    }).join('')}<span class="sub">${party.length} / ${state.party_max || 4}</span></nav>` : '';
+  $('#paneHero').innerHTML = sw + memberSheet(state, who, (state.party_info || {})[sheetWho] || {});
+
+  // ---- сцена: отряд, противники, остальные ----
+  const present = (state.present || []).filter(i => i !== state.player_id && state.characters[i]);
+  const companions = party.filter(i => i !== state.player_id);
+  const foes = present.filter(i => state.characters[i].side === 'hostile');
+  const others = present.filter(i => !companions.includes(i) && !foes.includes(i));
   $('#presentN').textContent = present.length || '';
+  const full = party.length >= (state.party_max || 4);
   const ATTR_SHORT = { 'Сила': 'Сил', 'Ловкость': 'Лов', 'Выносливость': 'Вын', 'Воля': 'Вол', 'Разум': 'Раз', 'Влияние': 'Вли' };
-  const near = id => {
+  const near = (id, kind) => {
     const c = state.characters[id] || {}, rv = c.reveal || {}, known = rv.attrs && c.attrs && Object.keys(c.attrs).length;
-    const full = rv.kind && rv.attrs && rv.abilities;
-    return `<div class="near"><span class="oval sm" aria-hidden="true" style="color:${inkOf(c.name)}">${esc(initial(c.name))}</span>
-      <div class="bd"><div class="hd"><span class="npc" style="color:${inkOf(c.name)}">${esc(c.name || '?')}</span>${full ? '<span class="note">осмотрен(а)</span>' : ''}</div>
-      ${rv.kind ? `<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">${esc(c.kind || 'вид неизвестен')}</span>` : ''}
-      ${!full ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">${!rv.kind ? '<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">вид неизвестен · характеристики скрыты</span>' : '<span></span>'}<button class="tbtn" data-cmd="осмотри ${esc(c.name)}">Осмотр</button></div>` : ''}
-      ${c.hp != null ? `<div class="bar hp thin"><span style="width:${pct(c.hp, c.max_hp)}%"></span></div><span style="font-size:14px;color:var(--ink-soft)">здоровье ${c.hp} / ${c.max_hp}</span>` : ''}
-      ${known ? `<span style="font-size:15px">${Object.entries(c.attrs).map(([k, v]) => `${ATTR_SHORT[k] || k} ${v}`).join(' · ')}</span>` : ''}
-      ${rv.abilities && (c.abilities || []).length ? `<span style="font-size:15px">${c.abilities.map(a => `${esc(a.name)} <i style="color:var(--ink-soft)">(${a.kind === 'active' ? 'акт.' : 'пасс.'})</i>`).join(' · ')}</span>` : ''}
+    const seen = rv.kind && rv.attrs && rv.abilities;
+    const down = c.hp === 0;
+    const acts = [];
+    if (!seen) acts.push(`<button class="tbtn" data-cmd="осмотри ${esc(c.name)}">Осмотр</button>`);
+    if (kind === 'other' && !down) acts.push(full ? '<span class="sub">отряд полон</span>' : `<button class="tbtn" data-pre="${esc(c.name)}, пойдёшь со мной? Предлагаю присоединиться к моему отряду. ">Позвать в отряд</button>`);
+    return `<div class="near${down ? ' down' : ''}"><span class="oval sm" aria-hidden="true" style="color:${inkOf(c.name)}">${esc(initial(c.name))}</span>
+      <div class="bd"><div class="hd"><span class="npc" style="color:${inkOf(c.name)}">${esc(c.name || '?')}</span>${down ? '<span class="note">повержен(а)</span>' : seen && kind !== 'party' ? '<span class="note">осмотрен(а)</span>' : ''}</div>
+      ${rv.kind ? `<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">${esc(c.kind || 'вид неизвестен')}</span>` : '<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">вид неизвестен · характеристики скрыты</span>'}
+      ${c.hp != null ? `<div class="bar hp thin"><span style="width:${pct(c.hp, c.max_hp)}%"></span></div><span style="font-size:14px;color:var(--ink-soft)">здоровье ${c.hp} / ${c.max_hp}${kind === 'party' ? ` · ур. ${c.level}` : ''}</span>` : ''}
+      ${known && kind !== 'party' ? `<span style="font-size:15px">${Object.entries(c.attrs).map(([k, v]) => `${ATTR_SHORT[k] || k} ${v}`).join(' · ')}</span>` : ''}
+      ${rv.abilities && kind !== 'party' && (c.abilities || []).length ? `<span style="font-size:15px">${c.abilities.map(a => `${esc(a.name)} <i style="color:var(--ink-soft)">(${a.kind === 'active' ? 'акт.' : 'пасс.'})</i>`).join(' · ')}</span>` : ''}
       ${(c.conditions || []).length ? `<span style="font-size:14px;color:var(--rubric)">${c.conditions.map(x => esc(x.name) + ' · ' + x.turns_left).join(', ')}</span>` : ''}
+      ${kind === 'party' ? `<div><button class="tbtn" data-who-open="${esc(id)}">Лист спутника</button></div>` : acts.length ? `<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">${acts.join('')}</div>` : ''}
       </div></div>`;
   };
+  const block = (title, ids, kind, empty) => `<section><h2 class="sh">${title}</h2><div style="display:flex;flex-direction:column;gap:16px">${ids.length ? ids.map(i => near(i, kind)).join('') : `<p class="sub" style="margin:0">${empty}</p>`}</div></section>`;
   const cb = state.combat || {};
-  let h = `<section><h2 class="sh">Рядом</h2><div style="display:flex;flex-direction:column;gap:16px">${present.length ? present.map(near).join('') : '<p class="sub" style="margin:0">Никого поблизости.</p>'}</div></section>`;
+  let h = '';
+  if (companions.length) h += block(`Отряд · ${party.length} / ${state.party_max || 4}`, companions, 'party', '');
+  if (foes.length || cb.active) h += block(`Противники${foes.length ? ' · ' + foes.filter(i => state.characters[i].hp !== 0).length : ''}`, foes, 'foe', 'Враги ещё не показались.');
+  h += block('Рядом', others, 'other', companions.length || foes.length ? 'Больше никого.' : 'Никого поблизости.');
   if (cb.active) {
     h += `<section><h2 class="sh">Бой · раунд ${cb.round}</h2><ol class="init">${(cb.order || []).map((o, i) => {
       const c = state.characters[o.id] || {}, me = o.id === state.player_id;
@@ -733,7 +771,16 @@ function renderSheet(state) {
   setv('#sMult', se.length_mult ?? 1); $('#sMultV').textContent = '×' + (se.length_mult ?? 1);
   setv('#sMax', se.max_speaks ?? ''); setv('#sLeave', se.inactive_leave ?? '');
 }
-$('#sheet').addEventListener('click', e => {
+$('#sheet').addEventListener('click', async e => {
+  const w = e.target.closest('[data-who]'); if (w) { sheetWho = w.dataset.who; renderSheet(st); return; }
+  const wo = e.target.closest('[data-who-open]'); if (wo) { sheetWho = wo.dataset.whoOpen; selectTab('hero'); renderSheet(st); return; }
+  const dm = e.target.closest('[data-dismiss]');
+  if (dm) {
+    if (!busy && await ask({ title: `Отпустить ${dm.dataset.dismiss}?`, text: 'Спутник уйдёт из отряда. Позвать обратно можно будет только по сюжету.', ok: 'Отпустить' })) {
+      closeSheet(); send('Система, отпусти ' + dm.dataset.dismiss);
+    }
+    return;
+  }
   const c = e.target.closest('[data-cmd]'); if (c) { if (!busy) { closeSheet(); send('Система, ' + c.dataset.cmd); } return; }
   const p = e.target.closest('[data-pre]'); if (p) prefill(p.dataset.pre);
 });

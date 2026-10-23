@@ -1,5 +1,6 @@
 """Deterministic mechanics: soft attributes, named abilities, checks, deltas, 'Система' commands."""
 import difflib, math, random, re
+from . import config
 from .models import ATTRS, ATTR_MIGRATE, Ability, Character, Item, Reveal, Scene
 
 # Soft-stat thresholds (attr vs baseline 10, or vs DC / opponent):
@@ -197,11 +198,11 @@ def _int(v) -> int:
         return 0
 
 
-def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
+def grant_exp(scene: Scene, c: Character, amount: int, msgs: list, note: str = ""):
     if amount <= 0:
         return
     c.exp += amount
-    msgs.append(f"{c.name}: +{amount} EXP ({c.exp}/{c.exp_next})")
+    msgs.append(f"{c.name}: +{amount} EXP{note} ({c.exp}/{c.exp_next})")
     while c.exp >= c.exp_next:
         c.exp -= c.exp_next
         c.level += 1
@@ -209,8 +210,8 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
         c.attr_points += 2; c.ability_points += 1; c.skill_points = c.ability_points
-        if c.is_player:
-            reshuffle_ability_offers(scene, 3)
+        if c.is_player or c.id in scene.party:
+            reshuffle_ability_offers(scene, 3, c)
             locked_n = len(getattr(c, "ability_locks", None) or [])
             extra = (
                 f" Список способностей перемешан"
@@ -220,7 +221,98 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
         else:
             extra = ""
         msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
-                    f"(«Система, распредели Сила +1»).{extra}")
+                    f"(«Система, распредели {'' if c.is_player else c.name.split()[0] + ' '}Сила +1»).{extra}")
+
+
+def party_ids(scene: Scene) -> list[str]:
+    """The hero first, then companions in joining order."""
+    return [scene.player_id] + [i for i in scene.party if i in scene.characters and i != scene.player_id]
+
+
+def in_party(scene: Scene, c: Character | None) -> bool:
+    return bool(c) and (c.is_player or c.id in scene.party)
+
+
+def catchup_mult(scene: Scene, c: Character) -> float:
+    """Companions behind the hero learn faster: base**level_gap (each level costs x1.5 more), capped."""
+    if c.is_player:
+        return 1.0
+    gap = max(0, scene.player.level - c.level)
+    return min(config.EXP_CATCHUP_MAX, config.EXP_CATCHUP_BASE ** gap)
+
+
+def award_exp(scene: Scene, c: Character, base: int, msgs: list, capped: bool = True) -> int:
+    """EXP for a party member. `capped`: the per-turn cap (LIMITS exp_turn) applies to the base amount so the
+    narrator cannot farm EXP; system-decided rewards (defeated foes) pass capped=False."""
+    if base <= 0 or not in_party(scene, c):
+        return 0
+    if capped:
+        got = scene.turn_exp if c.is_player else scene.turn_exp_by.get(c.id, 0)
+        base = max(0, min(base, LIMITS["exp_turn"] - got))
+        if c.is_player:
+            scene.turn_exp = got + base
+        else:
+            scene.turn_exp_by[c.id] = got + base
+    mult = catchup_mult(scene, c)
+    amount = round(base * mult)
+    grant_exp(scene, c, amount, msgs, f" (×{mult:g} — догоняет героя)" if mult > 1 and amount else "")
+    return amount
+
+
+def kill_exp(foe: Character) -> int:
+    return config.EXP_KILL + 5 * max(0, foe.level - 1)
+
+
+def join_party(scene: Scene, c: Character) -> tuple[bool, str]:
+    """A character agreed to join: the full card opens up, they start at level 1, the AI completes the card later."""
+    if c.is_player:
+        return False, "Герой и так ведёт отряд."
+    if c.id in scene.party:
+        return False, f"{c.name} уже в отряде."
+    if c.hp <= 0:
+        return False, f"{c.name} без сознания и не может вступить в отряд."
+    if len(party_ids(scene)) >= config.PARTY_MAX:
+        names = ", ".join(scene.characters[i].name for i in scene.party)
+        return False, (f"Отряд полон: не больше {config.PARTY_MAX} вместе с героем ({names}). "
+                       f"{c.name} не может присоединиться, пока кто-то не уйдёт.")
+    scene.party.append(c.id)
+    c.side = "party"
+    c.level, c.exp, c.exp_next = 1, 0, 100
+    c.attr_points = c.ability_points = c.skill_points = 0
+    c.ability_offers, c.ability_locks = [], []
+    c.reveal.kind = c.reveal.attrs = c.reveal.abilities = True
+    c.last_active_turn = scene.turn
+    if c.id not in scene.present:
+        scene.present.append(c.id)
+    if c.id not in scene.pending_fill:
+        scene.pending_fill.append(c.id)
+    return True, f"{c.name} вступает в отряд — уровень 1. Отряд: {len(party_ids(scene))}/{config.PARTY_MAX}."
+
+
+def leave_party(scene: Scene, c: Character | None) -> tuple[bool, str]:
+    if not c or c.id not in scene.party:
+        return False, f"{c.name if c else 'Этот персонаж'} не состоит в отряде."
+    scene.party.remove(c.id)
+    c.side = "neutral"
+    if c.id in scene.pending_fill:
+        scene.pending_fill.remove(c.id)
+    return True, f"{c.name} покидает отряд. Отряд: {len(party_ids(scene))}/{config.PARTY_MAX}."
+
+
+def pick_member(scene: Scene, rest: str) -> tuple[Character, str]:
+    """'распредели Сильфе Ловкость +1' -> (Сильфа, 'распредели  Ловкость +1'). Defaults to the hero.
+    Matches a word stem so Russian case endings (Сильфе, Сильфы) still work."""
+    low = (rest or "").lower()
+    for cid in scene.party:
+        c = scene.characters.get(cid)
+        if not c:
+            continue
+        for key in {c.name.lower(), c.name.split()[0].lower()}:
+            stem = key[:max(3, len(key) - 2)] if len(key) > 4 else key
+            m = re.search(r"(?<![а-яёa-z])" + re.escape(stem) + r"[а-яёa-z]*", low)
+            if m:
+                return c, rest[:m.start()] + rest[m.end():]
+    return scene.player, rest
 
 
 def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], list[str]]:
@@ -356,14 +448,15 @@ def _catalog_by_name() -> dict[str, dict]:
     return {x["name"]: x for x in ABILITY_CATALOG}
 
 
-def _offer_seed(scene: Scene, level: int) -> int:
-    """Stable per level (not per turn) so opening the list mid-level does not reshuffle."""
-    return int(scene.rng_seed) + int(level) * 10007 + 42
+def _offer_seed(scene: Scene, level: int, c: Character | None = None) -> int:
+    """Stable per level (not per turn) so opening the list mid-level does not reshuffle; differs per companion."""
+    own = 0 if c is None or c.is_player else sum(map(ord, c.id)) * 31
+    return int(scene.rng_seed) + int(level) * 10007 + 42 + own
 
 
-def reshuffle_ability_offers(scene: Scene, n: int = 3) -> list[dict]:
+def reshuffle_ability_offers(scene: Scene, n: int = 3, who: Character | None = None) -> list[dict]:
     """Rebuild offer list for current level. Locked names stay; other slots reshuffle."""
-    p = scene.player
+    p = who or scene.player
     have = {norm(a.name) for a in p.abilities}
     cat = _catalog_by_name()
     locked: list[str] = []
@@ -377,7 +470,7 @@ def reshuffle_ability_offers(scene: Scene, n: int = 3) -> list[dict]:
     p.ability_locks = locked[:]
     need = max(0, n - len(locked))
     pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in locked]
-    rng = random.Random(_offer_seed(scene, p.level))
+    rng = random.Random(_offer_seed(scene, p.level, p))
     rng.shuffle(pool)
     # light preference by attrs (after shuffle, bubble preferred forward)
     attrs = p.attrs or {}
@@ -400,12 +493,12 @@ def reshuffle_ability_offers(scene: Scene, n: int = 3) -> list[dict]:
             ordered.append(x)
     picked = locked + [x["name"] for x in ordered[:need]]
     p.ability_offers = picked
-    return ability_offers(scene, n)
+    return ability_offers(scene, n, p)
 
 
-def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
+def ability_offers(scene: Scene, n: int = 3, who: Character | None = None) -> list[dict]:
     """Current unlock offers. Creates/fills cache if empty; does not reshuffle mid-level."""
-    p = scene.player
+    p = who or scene.player
     have = {norm(a.name) for a in p.abilities}
     cat = _catalog_by_name()
     # drop taken / unknown from cache and locks
@@ -415,11 +508,11 @@ def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
     if len(offers) < n:
         # first open or after taking: fill remaining without wiping locks
         if not offers and not locks:
-            return reshuffle_ability_offers(scene, n)
+            return reshuffle_ability_offers(scene, n, p)
         # partial refill keeping existing order + locks
         have_names = set(offers)
         pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in have_names]
-        rng = random.Random(_offer_seed(scene, p.level) + len(p.abilities) * 13)
+        rng = random.Random(_offer_seed(scene, p.level, p) + len(p.abilities) * 13)
         rng.shuffle(pool)
         for x in pool:
             if len(offers) >= n:
@@ -437,12 +530,12 @@ def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
     return out
 
 
-def lock_ability_offer(scene: Scene, name: str) -> str:
-    p = scene.player
+def lock_ability_offer(scene: Scene, name: str, who: Character | None = None) -> str:
+    p = who or scene.player
     name = re.sub(r"\s+", " ", (name or "").strip())
     if not name:
         return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, зафиксируй Рывок»."
-    offers = ability_offers(scene, 8)
+    offers = ability_offers(scene, 8, p)
     pick = None
     nl = norm(name)
     for x in offers:
@@ -460,8 +553,8 @@ def lock_ability_offer(scene: Scene, name: str) -> str:
     return f"⟦ СИСТЕМА ⟧ Зафиксировано: **{pick}** — останется в списке при новом уровне."
 
 
-def unlock_ability_offer(scene: Scene, name: str) -> str:
-    p = scene.player
+def unlock_ability_offer(scene: Scene, name: str, who: Character | None = None) -> str:
+    p = who or scene.player
     name = re.sub(r"\s+", " ", (name or "").strip())
     if not name:
         return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, открепи Рывок»."
@@ -474,16 +567,16 @@ def unlock_ability_offer(scene: Scene, name: str) -> str:
     return f"⟦ СИСТЕМА ⟧ Снята фиксация с **{hit}** — при повышении уровня может уйти из списка."
 
 
-def take_ability(scene: Scene, name: str) -> str:
-    p = scene.player
+def take_ability(scene: Scene, name: str, who: Character | None = None) -> str:
+    p = who or scene.player
     if p.ability_points <= 0:
-        return "⟦ СИСТЕМА ⟧ Нет очков способностей. Они приходят с уровнем."
+        return f"⟦ СИСТЕМА ⟧ У {p.name} нет очков способностей. Они приходят с уровнем."
     name = re.sub(r"\s+", " ", (name or "").strip())
     if not name:
         return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, возьми Удар наёмника»."
     pick = None
     nl = norm(name)
-    for x in ability_offers(scene, 8) + ABILITY_CATALOG:
+    for x in ability_offers(scene, 8, p) + ABILITY_CATALOG:
         xn = norm(x["name"])
         if xn == nl or nl in xn or xn in nl:
             pick = x
@@ -513,7 +606,7 @@ def take_ability(scene: Scene, name: str) -> str:
     kind_ru = "активная" if pick.get("kind") == "active" else "пассивная"
     return (
         f"### ⟦ СИСТЕМА · СПОСОБНОСТЬ ⟧\n"
-        f"Открыто: **{pick['name']}** ({kind_ru}). "
+        f"{p.name}: открыто **{pick['name']}** ({kind_ru}). "
         f"Очков способностей осталось: {p.ability_points}."
     )
 
@@ -593,9 +686,8 @@ def inspect_target(scene: Scene, rest: str) -> str:
 
 def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
     """Client-facing character view: hide unrevealed NPC stats."""
-    if c.is_player:
-        d = c.model_dump()
-        return d
+    if c.is_player or c.side == "party":
+        return c.model_dump()
     d = {
         "id": c.id, "name": c.name, "is_player": False,
         "kind": c.kind if c.reveal.kind else "",
@@ -610,6 +702,7 @@ def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
         "abilities": [a.model_dump() for a in c.abilities] if c.reveal.abilities else [],
         "reveal": c.reveal.model_dump(),
         "conditions": [x.model_dump() for x in c.conditions] if (c.reveal.attrs or in_combat) else [],
+        "side": c.side,
     }
     return d
 
@@ -641,6 +734,8 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
     if any(k in r for k in ("провер", "аудит", "audit", "карточки")) and any(
             k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
         return "director_audit", r
+    if any(k in r for k in ("отпусти", "исключи", "прогони", "dismiss")): return "dismiss", r
+    if any(k in r for k in ("отряд", "групп", "party", "спутник")): return "party", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
     if any(k in r for k in ("зафикс", "закреп", "запин", "lock offer", "lock ability")):
         return "lock_ability", r
@@ -685,8 +780,29 @@ def status_text(c: Character) -> str:
 def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
     from . import combat as C
     p = scene.player
+    if cmd in ("status", "abilities", "lock_ability", "unlock_ability", "take_ability", "assign", "conditions"):
+        p, rest = pick_member(scene, rest)   # progression of companions is the hero's call too
+    if cmd == "party":
+        lines = [f"### ⟦ СИСТЕМА · ОТРЯД {len(party_ids(scene))}/{config.PARTY_MAX} ⟧"]
+        for cid in party_ids(scene):
+            c = scene.characters[cid]
+            mult = catchup_mult(scene, c)
+            lines.append(f"- {c.name}{' (герой)' if c.is_player else ''}: ур. {c.level}, HP {c.hp}/{c.max_hp}, "
+                         f"EXP {c.exp}/{c.exp_next}" + (f", опыт ×{mult:g}" if mult > 1 else "")
+                         + (f", свободные очки: атрибуты {c.attr_points}, способности {c.ability_points}"
+                            if c.attr_points or c.ability_points else ""))
+        if len(party_ids(scene)) == 1:
+            lines.append("Пока вы один. Предложите кому-нибудь пойти с вами — согласие решает сам персонаж.")
+        return chr(10).join(lines)
+    if cmd == "dismiss":
+        name = re.sub(r"отпусти\w*|исключи\w*|прогони\w*|из\s+отряда|dismiss", "", rest, flags=re.I).strip(" .,;:—-")
+        c = resolve_character(scene, name) if name else None
+        ok, msg = leave_party(scene, c)
+        return "⟦ ОТРЯД ⟧ " + msg
     if cmd == "status":
         others = [scene.characters[i] for i in scene.present if i != p.id]
+        if not p.is_player:
+            return "### ⟦ СИСТЕМА · СТАТУС ⟧\n" + status_text(p)
         s = "### ⟦ СИСТЕМА · СТАТУС ⟧\n" + status_text(p)
         s += f"\nРежим правил: {scene.rule_mode}. Ход: {scene.turn}."
         if scene.combat.active:
@@ -695,7 +811,7 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             s += "\nРядом: " + ", ".join(f"{o.name} (HP {o.hp}/{o.max_hp})" for o in others)
         return s
     if cmd == "abilities":
-        lines = ["### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧"]
+        lines = ["### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧" + ("" if p.is_player else f" {p.name}")]
         lines.append(f"Очки способностей: **{p.ability_points}** · очки атрибутов: {p.attr_points}")
         if not p.abilities:
             lines.append("Сейчас открытых способностей нет (это не «ближний бой» — только особые умения).")
@@ -712,7 +828,7 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
                 for a in pas:
                     lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
         if p.ability_points > 0:
-            offers = ability_offers(scene, 3)
+            offers = ability_offers(scene, 3, p)
             lines.append("")
             lines.append("Можно открыть (1 очко за способность; список перемешивается с новым уровнем):")
             for i, x in enumerate(offers, 1):
@@ -720,7 +836,8 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
                 lock = " 🔒" if x.get("locked") else ""
                 lines.append(f"{i}. **{x['name']}**{lock} ({kd}) — {x.get('description') or '—'}")
             tip = offers[0]["name"] if offers else "Название"
-            lines.append(f"Взять: «Система, возьми {tip}».")
+            whom = "" if p.is_player else p.name.split()[0] + " "
+            lines.append(f"Взять: «Система, возьми {whom}{tip}».")
             lines.append("Зафиксировать в списке (не уйдёт при уровне): «Система, зафиксируй {tip}».")
             lines.append("Снять фиксацию: «Система, открепи {tip}».")
         else:
@@ -731,19 +848,19 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             r"зафикс\w*|закреп\w*|запин\w*|lock\s*offer|lock\s*ability|способност\w*",
             "", rest, flags=re.I,
         ).strip(" .,;:—-")
-        return lock_ability_offer(scene, name)
+        return lock_ability_offer(scene, name, p)
     if cmd == "unlock_ability":
         name = re.sub(
             r"откреп\w*|отфикс\w*|сними\s*фикс\w*|unlock\s*offer|unlock\s*ability|способност\w*",
             "", rest, flags=re.I,
         ).strip(" .,;:—-")
-        return unlock_ability_offer(scene, name)
+        return unlock_ability_offer(scene, name, p)
     if cmd == "take_ability":
         name = re.sub(
             r"возьм\w*|выуч\w*|открой|открыть|взять|выбрать|способност\w*|навык\w*|unlock|learn",
             "", rest, flags=re.I,
         ).strip(" .,;:—-")
-        return take_ability(scene, name)
+        return take_ability(scene, name, p)
     if cmd == "inspect":
         return inspect_target(scene, rest)
     if cmd == "inventory":
@@ -786,9 +903,10 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         if not attr:
             return "⟦ СИСТЕМА ⟧ Укажите атрибут: " + ", ".join(ATTRS)
         if n > p.attr_points:
-            return f"⟦ СИСТЕМА ⟧ Недостаточно очков: есть {p.attr_points}."
+            return f"⟦ СИСТЕМА ⟧ Недостаточно очков у {p.name}: есть {p.attr_points}."
         p.attr_points -= n; p.attrs[attr] += n
-        return f"⟦ СИСТЕМА ⟧ {attr} {p.attrs[attr] - n}→{p.attrs[attr]}. Осталось очков: {p.attr_points}."
+        return (f"⟦ СИСТЕМА ⟧ {'' if p.is_player else p.name + ': '}{attr} {p.attrs[attr] - n}→{p.attrs[attr]}. "
+                f"Осталось очков: {p.attr_points}.")
     if cmd == "train":
         return "⟦ СИСТЕМА ⟧ Очки навыков в «ближний бой» не вкладываются. Смотрите «Система, способности» и «Система, возьми …»."
     return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
@@ -809,6 +927,9 @@ def state_line(scene: Scene) -> str:
     inv = ", ".join(("*" + i.name + "*" if i.equipped else i.name) for i in p.inventory[:8]) or "пусто"
     cond = (", ".join(x.name for x in p.conditions)) or "нет"
     combat = f" Бой р.{scene.combat.round}." if scene.combat.active else ""
+    party = [scene.characters[i] for i in scene.party if i in scene.characters]
+    combat += (" Отряд героя: " + ", ".join(f"{c.name} (ур. {c.level}, HP {c.hp}/{c.max_hp})" for c in party) + "."
+               if party else "")
     return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, MP {p.mp}/{p.max_mp}, "
             f"EXP {p.exp}/{p.exp_next}, КБ {C.ac(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat} "
             f"В сцене: {', '.join(present) or 'никого'}.")

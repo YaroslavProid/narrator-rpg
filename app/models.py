@@ -77,6 +77,7 @@ class Character(BaseModel):
     conditions: list[Condition] = []
     reveal: Reveal = Field(default_factory=Reveal)
     last_active_turn: int = 0
+    side: Literal["neutral", "party", "hostile"] = "neutral"   # hero's party / foe / everyone else
 
     @model_validator(mode="before")
     @classmethod
@@ -200,6 +201,9 @@ class Scene(BaseModel):
     snapshots: list[dict] = []
     combat: Combat = Combat()
     director_log: list[str] = []
+    party: list[str] = []            # companion ids (the hero is implicit), at most PARTY_MAX-1
+    pending_fill: list[str] = []     # companions whose card the AI still has to complete
+    turn_exp_by: dict[str, int] = {} # EXP granted this turn per character (cap), reset each turn
     director_note: str = ""  # one-shot hint for narrator (from Director chat)
     regen: int = 0
     version: int = 4
