@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 TAG_RE = re.compile(r"<\s*(\w+)((?:\s+[\w-]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s/>]+))*)\s*/?\s*>?\s*$", re.S)
 ATTR_RE = re.compile(r"([\w-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s/>]+))")
-ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end", "scale"}
-REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": [], "scale": ["level"]}
+ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end", "scale", "attack", "combat", "condition"}
+REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": [], "scale": ["level"], "attack": ["target"], "combat": ["action"], "condition": ["who", "name"]}
 
 
 class ParseError(Exception):
@@ -147,9 +147,10 @@ def tag_grammar(names: list[str], skills: list[str]) -> str:
     """GBNF for the format-error retry: exactly one valid action tag."""
     q = lambda xs: " | ".join('"' + x.replace('"', '') + '"' for x in xs) or '"?"'
     return "\n".join([
-        'root ::= [ \\n]* ( speak | roll | end )',
+        'root ::= [ \\n]* ( speak | roll | attack | end )',
         'speak ::= "<speak who=\\"" name "\\" intent=\\"" txt "\\"/>"',
         'roll ::= "<roll skill=\\"" skill "\\" dc=\\"" dc "\\"/>"',
+        'attack ::= "<attack who=\\"" name "\\" target=\\"" name "\\" weapon=\\"" txt "\\"/>" | "<attack target=\\"" name "\\"/>"',
         'end ::= "<end/>"',
         f"name ::= {q(names)}",
         f"skill ::= {q(skills)}",
