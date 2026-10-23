@@ -327,6 +327,93 @@ def give_item(scene: Scene, giver: Character, name: str, receiver: Character) ->
     return f"⟦ СИСТЕМА ⟧ {giver.name} отдаёт «{got.name}» → {receiver.name}."
 
 
+
+# ---- ability unlock offers (spend ability_points) ----
+ABILITY_CATALOG = [
+    {"name": "Удар наёмника", "kind": "active", "description": "Точный рубящий удар: в бою опишите применение — бонус к следующему удару оружием.", "cost": "", "cooldown": "1/сцена"},
+    {"name": "Железная стойка", "kind": "passive", "description": "Привычка держать строй: легче выдерживать боль и усталость в долгих стычках.", "cost": "", "cooldown": ""},
+    {"name": "Глаз следопыта", "kind": "passive", "description": "Замечаете следы, дым, ловушки и чужое присутствие раньше обычного.", "cost": "", "cooldown": ""},
+    {"name": "Рывок", "kind": "active", "description": "Короткий ускоренный рывок к цели или в укрытие.", "cost": "", "cooldown": "1/сцена"},
+    {"name": "Твёрдый дух", "kind": "passive", "description": "Сложнее сломать волю страхом, болью или чужой магией давления.", "cost": "", "cooldown": ""},
+    {"name": "Чтение потока", "kind": "active", "description": "На миг «видите» структуру маны/Системы вокруг — подсказка от рассказчика.", "cost": "2 MP", "cooldown": ""},
+    {"name": "Грозное присутствие", "kind": "active", "description": "Короткая угроза или взгляд, чтобы сбить с толку слабого противника.", "cost": "", "cooldown": "1/сцена"},
+    {"name": "Полевая медицина", "kind": "active", "description": "Быстрая перевязка: небольшое исцеление себе или союзнику вне тяжёлого боя.", "cost": "", "cooldown": "1/сцена"},
+    {"name": "Ночное зрение", "kind": "passive", "description": "В полумраке ориентируетесь почти как днём.", "cost": "", "cooldown": ""},
+    {"name": "Контрудар", "kind": "active", "description": "После чужой атаки вблизи — ответный удар тем же ходом (по решению механики/рассказчика).", "cost": "", "cooldown": "1/сцена"},
+]
+
+
+def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
+    """Pick unlockable abilities the player does not already have."""
+    p = scene.player
+    have = {norm(a.name) for a in p.abilities}
+    pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have]
+    if not pool:
+        return []
+    rng = random.Random(scene.rng_seed + scene.turn * 17 + p.ability_points * 3 + len(p.abilities) * 11)
+    rng.shuffle(pool)
+    attrs = p.attrs or {}
+    prefer = []
+    if attrs.get("Разум", 10) >= 15:
+        prefer += ["Чтение потока", "Глаз следопыта"]
+    if attrs.get("Сила", 10) >= 13:
+        prefer += ["Удар наёмника", "Контрудар"]
+    if attrs.get("Ловкость", 10) >= 13:
+        prefer += ["Рывок", "Глаз следопыта"]
+    if attrs.get("Воля", 10) >= 13:
+        prefer += ["Твёрдый дух", "Грозное присутствие"]
+    ordered = []
+    for name in prefer:
+        for x in pool:
+            if x["name"] == name and x not in ordered:
+                ordered.append(x)
+    for x in pool:
+        if x not in ordered:
+            ordered.append(x)
+    return ordered[:n]
+
+
+def take_ability(scene: Scene, name: str) -> str:
+    p = scene.player
+    if p.ability_points <= 0:
+        return "⟦ СИСТЕМА ⟧ Нет очков способностей. Они приходят с уровнем."
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, возьми Удар наёмника»."
+    pick = None
+    nl = norm(name)
+    for x in ability_offers(scene, 8) + ABILITY_CATALOG:
+        xn = norm(x["name"])
+        if xn == nl or nl in xn or xn in nl:
+            pick = x
+            break
+    if not pick:
+        names = [x["name"] for x in ABILITY_CATALOG]
+        m = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+        if m:
+            for x in ABILITY_CATALOG:
+                if x["name"] == m[0]:
+                    pick = x
+                    break
+    if not pick:
+        return f"⟦ СИСТЕМА ⟧ Нет способности «{name}». Откройте список: «Система, способности»."
+    if any(norm(a.name) == norm(pick["name"]) for a in p.abilities):
+        return f"⟦ СИСТЕМА ⟧ «{pick['name']}» уже есть."
+    p.ability_points -= 1
+    p.skill_points = p.ability_points
+    p.abilities.append(Ability(
+        name=pick["name"], kind=pick.get("kind") or "passive",
+        description=pick.get("description") or "", cost=pick.get("cost") or "",
+        cooldown=pick.get("cooldown") or "",
+    ))
+    kind_ru = "активная" if pick.get("kind") == "active" else "пассивная"
+    return (
+        f"### ⟦ СИСТЕМА · СПОСОБНОСТЬ ⟧\n"
+        f"Открыто: **{pick['name']}** ({kind_ru}). "
+        f"Очков способностей осталось: {p.ability_points}."
+    )
+
+
 # ---------------- 'Система, ...' commands ----------------
 
 def apply_reveal(c: Character, what: str) -> list[str]:
@@ -425,6 +512,16 @@ def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
 
 def parse_system_command(text: str) -> tuple[str, str] | None:
     t = (text or "").strip().lower().lstrip("*\"«„“(_[ ")
+    # Soft meta: open ability list without «Система,» prefix
+    meta = re.sub(r"^\*+|\*+$", "", t).strip()
+    if re.search(
+        r"(очк\w*\s+способност|способност\w*\s+очк|список\s+навык|мои\s+(навыки|способности)|"
+        r"куда\s+(можно\s+)?(вложить|потратить|распредел).{0,48}(способност|навык|очк)|"
+        r"открой.{0,24}(навыки|способности)|смотрю.{0,40}(способност|навык|очк))",
+        meta,
+    ):
+        if not re.search(r"\b(сильф|враг|гоблин|твар)\w*", meta):
+            return "abilities", meta
     rest = None; p = ""
     for pref in ("система", "system", "/"):
         if t.startswith(pref):
@@ -438,6 +535,8 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
             k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
         return "director_audit", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
+    if any(k in r for k in ("возьм", "выуч", "открой способ", "взять способ", "выбрать способ", "unlock", "learn")):
+        return "take_ability", r
     if any(k in r for k in ("навык", "скил", "skill", "умени", "способн", "абил")) and "распредел" not in r and "влож" not in r:
         return "abilities", r
     if any(k in r for k in ("инвент", "invent", "сумк", "предмет", "вещи")): return "inventory", r
@@ -485,23 +584,40 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             s += "\nРядом: " + ", ".join(f"{o.name} (HP {o.hp}/{o.max_hp})" for o in others)
         return s
     if cmd == "abilities":
+        lines = ["### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧"]
+        lines.append(f"Очки способностей: **{p.ability_points}** · очки атрибутов: {p.attr_points}")
         if not p.abilities:
-            return "### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧\nПока нет. «Навыки» здесь — активные и пассивные умения (не «ближний бой»)."
-        act = [a for a in p.abilities if a.kind == "active"]
-        pas = [a for a in p.abilities if a.kind != "active"]
-        lines = []
-        if act:
-            lines.append("Активные:")
-            for a in act:
-                extra = ", ".join(x for x in (a.cost and f"цена {a.cost}", a.cooldown and f"кд {a.cooldown}") if x)
-                lines.append(f"- {a.name}" + (f" ({extra})" if extra else "") + (f" — {a.description}" if a.description else ""))
-        if pas:
-            lines.append("Пассивные:")
-            for a in pas:
-                lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
-        return "### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧\n" + "\n".join(lines)
-    if cmd in ("director", "director_audit"):
-        return "__DIRECTOR__"  # handled async in engine
+            lines.append("Сейчас открытых способностей нет (это не «ближний бой» — только особые умения).")
+        else:
+            act = [a for a in p.abilities if a.kind == "active"]
+            pas = [a for a in p.abilities if a.kind != "active"]
+            if act:
+                lines.append("Активные:")
+                for a in act:
+                    extra = ", ".join(x for x in (a.cost and f"цена {a.cost}", a.cooldown and f"кд {a.cooldown}") if x)
+                    lines.append(f"- {a.name}" + (f" ({extra})" if extra else "") + (f" — {a.description}" if a.description else ""))
+            if pas:
+                lines.append("Пассивные:")
+                for a in pas:
+                    lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
+        if p.ability_points > 0:
+            offers = ability_offers(scene, 3)
+            lines.append("")
+            lines.append("Можно открыть (1 очко за способность):")
+            for i, x in enumerate(offers, 1):
+                kd = "акт." if x.get("kind") == "active" else "пасс."
+                lines.append(f"{i}. **{x['name']}** ({kd}) — {x.get('description') or '—'}")
+            tip = offers[0]["name"] if offers else "Название"
+            lines.append(f"Взять: «Система, возьми {tip}».")
+        else:
+            lines.append("Очков способностей нет — они приходят с новым уровнем.")
+        return chr(10).join(lines)
+    if cmd == "take_ability":
+        name = re.sub(
+            r"возьм\w*|выуч\w*|открой|открыть|взять|выбрать|способност\w*|навык\w*|unlock|learn",
+            "", rest, flags=re.I,
+        ).strip(" .,;:—-")
+        return take_ability(scene, name)
     if cmd == "inspect":
         return inspect_target(scene, rest)
     if cmd == "inventory":
@@ -548,9 +664,9 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         p.attr_points -= n; p.attrs[attr] += n
         return f"⟦ СИСТЕМА ⟧ {attr} {p.attrs[attr] - n}→{p.attrs[attr]}. Осталось очков: {p.attr_points}."
     if cmd == "train":
-        return "⟦ СИСТЕМА ⟧ Очки навыков больше не вкладываются в «ближний бой» — проверки по атрибутам. Способности выдаёт сюжет/ИИ."
+        return "⟦ СИСТЕМА ⟧ Очки навыков в «ближний бой» не вкладываются. Смотрите «Система, способности» и «Система, возьми …»."
     return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
-            "- «Система, статус» / способности / инвентарь / состояния / бой\n"
+            "- «Система, статус» / способности / «возьми …» / инвентарь / состояния / бой\n"
             "- «Система, осмотри Имя» — разведка противника\n"
             "- «Система, директор …» / «Система, проверь карточки»\n"
             "- «Система, экипируй Короткий меч» / «сними Щит»\n"

@@ -826,11 +826,19 @@ class TurnEngine:
         return c
 
     async def _speak(self, scene, c, intent, emit, calls) -> str:
+        # Latest player line this turn (so NPC hears words, not "silence")
+        player_line = ""
+        for e in reversed(scene.log):
+            if e.turn != scene.turn:
+                break
+            if e.kind == "player":
+                player_line = e.text or ""
+                break
         # knowledge = own witnessed summaries/facts + own archived memories + recent witnessed events (bounded)
         old = MEM.character_knowledge(scene, c.id)
         mems = await self.retrieve(scene, intent + " " + " ".join(self.recent_knows(scene, c)[-2:]), c.id, 2)
         knows = old + [f"(помнит, ход {m['turn']}) {m['text'][:200]}" for m in mems] + self.recent_knows(scene, c)[-6:]
-        extra = [{"role": "user", "content": P.speak_block(scene, c, intent, knows)}]
+        extra = [{"role": "user", "content": P.speak_block(scene, c, intent, knows, player_line)}]
         # prefill "Имя: «" so the model writes the line itself instead of echoing <narrate> history format
         prompt = self.prompt(scene, open_model=f"{c.name}: «", extra=extra)
         line = ""

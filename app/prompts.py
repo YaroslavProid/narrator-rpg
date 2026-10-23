@@ -1,4 +1,5 @@
 """Prompt text (Russian). The system block is rendered once per scene and stored verbatim."""
+import re
 from .models import ATTRS, Character, Scene
 
 RULES_D20 = ("Режим правил: d20. Когда исход действия не очевиден, вставь "
@@ -41,7 +42,7 @@ def build_system(scene: Scene) -> str:
 
 # Формат ответа (строго, только эти теги)
 <narrate>повествование, 1–3 предложения</narrate>
-<speak who="Имя" intent="что персонаж хочет сказать, кратко"/> — персонаж говорит. Реплику напишет сам персонаж, ты задаёшь только намерение. Не пиши прямую речь NPC внутри narrate.
+<speak who="Имя" intent="что персонаж хочет сказать, кратко"/> — персонаж говорит. Реплику напишет сам персонаж, ты задаёшь только намерение. Не пиши прямую речь NPC внутри narrate. Если в [ИГРОК] есть слова (не только *жест*), в intent для <speak> отвечай на них и не ставь «молчит/не отвечает».
 <roll skill="Ловкость" dc="12"/> — проверка атрибута игрока (не «ближний бой»/«знания»).
 <reveal who="Имя" what="kind|attrs|abilities|all"/> — игрок что-то узнал об NPC (осмотр/расследование).
 <change who="Имя" hp="-5" mp="0" exp="10" add="предмет" remove="предмет"/> — изменение показателей (урон, лечение, опыт, находка, потеря). Указывай только нужные атрибуты.
@@ -100,7 +101,7 @@ def player_message(scene: Scene, state: str, text: str | None, hint: str = "", m
     return f"{state}\n{mem}{act}\n({hint + ' ' if hint else ''}Только по-русски, теги протокола. Не пиши за игрока.)"
 
 
-def speak_block(scene: Scene, c: Character, intent: str, knows: list[str]) -> str:
+def speak_block(scene: Scene, c: Character, intent: str, knows: list[str], player_line: str | None = None) -> str:
     in_fixed = c.id in scene.initial_present
     card = "" if in_fixed else "Карточка: " + card_text(c).replace("\n", " ").strip() + "\n"
     secrets = f"Твои тайны (не выдавай без причины): {c.secrets}\n" if c.secrets else ""
@@ -109,7 +110,23 @@ def speak_block(scene: Scene, c: Character, intent: str, knows: list[str]) -> st
         if total + len(x) > 1600: break
         lines.insert(0, f"- {x}"); total += len(x)
     k = "\n".join(lines) or "- (ничего особенного)"
+    pl = (player_line or "").strip()
+    spoken = re.sub(r"\*[^*]+\*", " ", pl).strip()
+    spoken = re.sub(r"\s+", " ", spoken)
+    if spoken:
+        hear = (
+            f"Игрок ТОЛЬКО ЧТО сказал (ты это слышишь, если рядом): «{spoken[:300]}».\n"
+            f"Не утверждай, что он молчит. Ответь по смыслу его слов (можно коротко и в характере).\n"
+        )
+    elif pl:
+        hear = (
+            f"Игрок сейчас делает жест/действие без явной речи: {pl[:300]}.\n"
+            f"Можно спросить, что с ним, но не делай вид, будто он обязан был говорить вслух.\n"
+        )
+    else:
+        hear = "Реплики игрока в этом ходе нет.\n"
     return (f"[РЕПЛИКА] Сейчас говорит {c.name}.\n{card}{secrets}"
             f"Что {c.name} знает и помнит (только то, что видел(а) сам(а)):\n{k}\n"
-            f"О событиях без {c.name} персонаж не знает.\nНамерение: {intent or 'ответить по ситуации'}.\n"
-            f"Ответь 1–3 фразами от лица {c.name}: только прямая речь, по-русски, без повествования, без тегов, без имени в начале.")
+            f"О событиях без {c.name} персонаж не знает.\n{hear}"
+            f"Намерение от рассказчика: {intent or 'ответить по ситуации'}.\n"
+            f"Ответь 1–3 фразами от лица {c.name}: только речь, без кавычек и без имени в начале.\n")

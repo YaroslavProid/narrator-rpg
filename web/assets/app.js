@@ -650,9 +650,12 @@ function renderSheet(state) {
     <section><h2 class="sh">Атрибуты</h2>${attrTable(p.attrs, d20)}
       ${(p.attr_points || p.ability_points) ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:16px">
         <span>Свободные очки: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${p.attr_points || 0}</b>${p.ability_points ? ` · способностей <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${p.ability_points}</b>` : ''}</span>
-        <button class="tbtn" data-pre="Система, распредели ">Распределить…</button></div>` : ''}</section>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="tbtn" data-pre="Система, распредели ">Атрибуты…</button>
+          ${(p.ability_points) ? `<button class="tbtn" data-cmd="способности">Открыть список…</button>` : ''}
+        </span></div>` : ''}</section>
     ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(c => `<div>${condIco(c.name)}<span>${esc(c.name[0].toUpperCase() + c.name.slice(1))}</span><em>${turnsLeft(c.turns_left)}${c.potency ? ` · −${c.potency} HP` : ''}</em></div>`).join('')}</div></section>` : ''}
-    <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : '<p class="sub" style="margin:0">Пока ни одной.</p>'}</section>
+    <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : `<p class="sub" style="margin:0">Пока ни одной.${p.ability_points ? ` Есть <b>${p.ability_points}</b> очк. — можно открыть новые.` : ''}</p>`}${p.ability_points ? `<button class="tbtn" style="margin-top:8px" data-cmd="способности">Что можно открыть…</button>` : ''}</section>
     <section><h2 class="sh">Опись</h2>${(p.inventory || []).length ? `<div class="inv">${p.inventory.map(item).join('')}</div>` : '<p class="sub" style="margin:0">Пусто.</p>'}</section>`;
 
   // ---- сцена ----
