@@ -3,6 +3,7 @@ dynamic per-turn budget, long-term memory (archive/summaries/facts/retrieval), r
 import asyncio, itertools, json, re, time
 from . import config, mechanics as M, prompts as P, store
 from . import memory as MEM
+from . import combat as C
 from .budget import turn_budget
 from .models import Character, Event, Scene, Summary
 from .prompt import render
@@ -57,6 +58,7 @@ class TurnEngine:
         self.mem = memory
         self.lock = asyncio.Lock()
         self.bg_running = False
+        self.bg_cancel = asyncio.Event()   # set when a player turn wants the slot
 
     # ---------- helpers ----------
     def names(self, scene):
@@ -81,7 +83,7 @@ class TurnEngine:
     def state(self, scene):
         return {"player_id": scene.player_id, "present": scene.present, "rule_mode": scene.rule_mode, "turn": scene.turn,
                 "settings": scene.settings.model_dump(), "summaries": len(scene.summaries), "facts": len(scene.facts),
-                "archived_turn": scene.archived_turn,
+                "archived_turn": scene.archived_turn, "combat": scene.combat.model_dump(),
                 "characters": {k: v.model_dump() for k, v in scene.characters.items()}}
 
     def prompt(self, scene, open_model=None, extra=None):
@@ -96,7 +98,9 @@ class TurnEngine:
 
     # ---------- public ----------
     async def handle(self, scene: Scene, text: str | None, emit) -> dict:
+        self.bg_cancel.set()                 # ask background to yield the slot
         async with self.lock:
+            self.bg_cancel.clear()
             if text is not None:
                 cmd = M.parse_system_command(text)
                 if cmd:
@@ -123,7 +127,8 @@ class TurnEngine:
                 "characters": {k: v.model_dump() for k, v in scene.characters.items()}, "present": list(scene.present),
                 "rng_calls": scene.rng_calls, "summaries": [s.model_dump() for s in scene.summaries],
                 "facts": [f.model_dump() for f in scene.facts], "archived_upto": scene.archived_upto,
-                "archived_turn": scene.archived_turn, "injected": list(scene.memory_injected), "stats_len": len(scene.stats)}
+                "archived_turn": scene.archived_turn, "injected": list(scene.memory_injected),
+                "stats_len": len(scene.stats), "combat": scene.combat.model_dump()}
 
     def rewind(self, scene: Scene, to_turn: int) -> bool:
         """Undo every turn >= to_turn (restore the snapshot taken when turn `to_turn` started)."""
@@ -131,13 +136,14 @@ class TurnEngine:
         if idx is None:
             return False
         s = scene.snapshots[idx]
-        from .models import Character as C, Fact, Summary as S
+        from .models import Character as Ch, Fact, Summary as S, Combat
         scene.turns = scene.turns[:s["turns_len"]]; scene.log = scene.log[:s["log_len"]]
-        scene.characters = {k: C.model_validate(v) for k, v in s["characters"].items()}
+        scene.characters = {k: Ch.model_validate(v) for k, v in s["characters"].items()}
         scene.present = s["present"]; scene.rng_calls = s["rng_calls"]
         scene.summaries = [S.model_validate(x) for x in s["summaries"]]; scene.facts = [Fact.model_validate(x) for x in s["facts"]]
         scene.archived_upto = s["archived_upto"]; scene.archived_turn = s["archived_turn"]
         scene.memory_injected = s["injected"]; scene.stats = scene.stats[:s["stats_len"]]
+        scene.combat = Combat.model_validate(s.get("combat") or {})
         scene.turn = s["turn"]; scene.snapshots = scene.snapshots[:idx]
         if self.mem:
             try: self.mem.delete_from(scene.id, to_turn)
@@ -150,7 +156,9 @@ class TurnEngine:
             return self.rewind(scene, to_turn)
 
     async def regenerate(self, scene: Scene, emit) -> dict | None:
+        self.bg_cancel.set()
         async with self.lock:
+            self.bg_cancel.clear()
             if not scene.snapshots:
                 return None
             s = scene.snapshots[-1]
@@ -160,13 +168,11 @@ class TurnEngine:
             return await self._turn(scene, s["input"], emit)
 
     # ---------- memory ----------
-    async def retrieve(self, scene, query: str, witness: str, k: int) -> list[dict]:
-        if not self.mem or scene.archived_turn <= 1:
-            return []
+    async def retrieve(self, scene, query: str, witness: str, k: int, recent: str = "") -> list[dict]:
         live = {x.split("|")[0] for x in scene.memory_injected if int(x.split("|")[1]) >= scene.archived_turn}
         try:
-            return await asyncio.to_thread(self.mem.query, scene.id, query, k, witness, scene.archived_turn,
-                                           ["narration", "speech", "player", "roll"], live)
+            return await asyncio.to_thread(MEM.retrieve, self.mem, scene, query, witness, k, recent,
+                                           self.names(scene), live)
         except Exception:
             return []
 
@@ -196,47 +202,98 @@ class TurnEngine:
         return out
 
     def plan_blocks(self, tt, n_blocks: int) -> list[tuple]:
-        """Split the oldest part of the window into up to n blocks of ~ARCHIVE_BLOCK tokens (keep >=2 turns)."""
-        blocks = []; j = 0
+        """Split the oldest part into up to n blocks of ~ARCHIVE_BLOCK tokens.
+        Never emit a block smaller than ARCHIVE_MIN (unless forced to a single leftover ≥2 turns)."""
+        blocks = []; j = 0; min_tok = config.ARCHIVE_MIN
         while len(blocks) < n_blocks and j < len(tt) - 2:
             acc = 0; k = j
             while k < len(tt) - 2 and acc < config.ARCHIVE_BLOCK:
                 acc += tt[k][2]; k += 1
+            # grow to min size if we still have room before the keep-tail
+            while k < len(tt) - 2 and acc < min_tok:
+                acc += tt[k][2]; k += 1
+            if acc < min_tok and len(blocks) > 0:
+                break   # leftover too small — leave for next archive
+            if k == j:
+                break
             blocks.append((tt[j][1], tt[k - 1][1], tt[k][0], acc)); j = k
         return blocks
 
-    async def archive_block(self, scene, calls, forced=False, n_blocks: int = 1) -> str | None:
-        """Summarise the oldest ~ARCHIVE_BLOCK-token blocks. All archiver calls run as tails on the SAME cached
-        narrator prompt (cheap); the result is applied once, so only one full re-read (the re-warm) follows."""
+    async def archive_block(self, scene, calls, forced=False, n_blocks: int = 1,
+                            cancel: "asyncio.Event | None" = None) -> str | None:
+        """Summarise oldest blocks. Prefer ONE multi-block LLM call (single-pass) so the slot
+        only re-reads the archiver tail once; apply all results afterwards. Checks `cancel`
+        between LLM work so a waiting player turn can reclaim the slot."""
+        if cancel and cancel.is_set():
+            return None
         tt = await self.turn_tokens(scene)
         blocks = self.plan_blocks(tt, n_blocks)
         if not blocks:
             return None
-        msgs = []; pending = []
-        for from_turn, to_turn, end_idx, acc in blocks:
-            anchors = {}
-            for e in scene.log:
-                if e.kind == "player" and e.turn in (from_turn, to_turn, to_turn + 1) and e.turn not in anchors:
-                    anchors[e.turn] = e.text[:120]
+        # force a single undersized block only when forced and nothing else fits
+        if forced and not blocks:
+            return None
+        anchors = {}
+        for e in scene.log:
+            if e.kind == "player" and any(e.turn in (b[0], b[1], b[1] + 1) for b in blocks) and e.turn not in anchors:
+                anchors[e.turn] = e.text[:120]
+        pending = []
+        if len(blocks) == 1:
+            from_turn, to_turn, end_idx, acc = blocks[0]
             extra = [{"role": "user", "content": MEM.archiver_request(scene, from_turn, to_turn, anchors)}]
-            content, st = await self.llm.complete(self.prompt(scene, open_model="", extra=extra), 700, stop=["<turn|>"],
-                                                  temperature=0.3, json_schema=MEM.SUMMARY_SCHEMA)
+            content, st = await self.llm.complete(self.prompt(scene, open_model="", extra=extra), 700,
+                                                  stop=["<turn|>"], temperature=0.3, json_schema=MEM.SUMMARY_SCHEMA)
             st["kind"] = "archive" + (" (forced)" if forced else ""); calls.append(st)
+            if cancel and cancel.is_set():
+                return None
             try:
                 data = json.loads(content)
             except Exception:
                 data = {"summary": re.sub(r"\s+", " ", content)[:800], "facts": []}
             pending.append((from_turn, to_turn, end_idx, acc, data))
-        summaries = list(scene.summaries); new_docs = []
+        else:
+            # single-pass multi-block: one JSON, one re-read of the tail
+            extra = [{"role": "user", "content": MEM.multi_archiver_request(scene, blocks, anchors)}]
+            content, st = await self.llm.complete(self.prompt(scene, open_model="", extra=extra),
+                                                  min(1400, 350 * len(blocks)), stop=["<turn|>"],
+                                                  temperature=0.3, json_schema=MEM.MULTI_SUMMARY_SCHEMA)
+            st["kind"] = f"archive×{len(blocks)}" + (" (forced)" if forced else ""); calls.append(st)
+            if cancel and cancel.is_set():
+                return None
+            try:
+                raw_blocks = json.loads(content).get("blocks") or []
+            except Exception:
+                raw_blocks = []
+            by_range = {(int(b.get("from_turn", 0)), int(b.get("to_turn", 0))): b for b in raw_blocks}
+            for from_turn, to_turn, end_idx, acc in blocks:
+                data = by_range.get((from_turn, to_turn))
+                if not data:
+                    # fuzzy match by midpoint
+                    data = next((b for (a, c), b in by_range.items() if a <= from_turn and to_turn <= c), None)
+                if not data:
+                    data = {"summary": f"События ходов {from_turn}–{to_turn}.", "facts": []}
+                pending.append((from_turn, to_turn, end_idx, acc, data))
+        msgs = []; new_docs = []; summaries = list(scene.summaries)
         for from_turn, to_turn, end_idx, acc, data in pending:
             wit = sorted({w for e in scene.log if from_turn <= e.turn <= to_turn for w in e.witnesses})
-            summ = Summary(layer=1, from_turn=from_turn, to_turn=to_turn, text=data.get("summary", "").strip(), witnesses=wit)
-            new_facts = MEM.add_facts(scene, data.get("facts") or [], wit, to_turn, lambda n: M.resolve_character(scene, n))
+            summ = Summary(layer=1, from_turn=from_turn, to_turn=to_turn,
+                           text=(data.get("summary") or "").strip(), witnesses=wit)
+            new_facts = MEM.add_facts(scene, data.get("facts") or [], wit, to_turn,
+                                      lambda n: M.resolve_character(scene, n))
             summaries.append(summ)
-            new_docs += [{"id": f"s{from_turn}-{to_turn}", "text": summ.text, "turn": to_turn, "kind": "summary", "witnesses": wit}]
-            new_docs += [{"id": f"f{f.id}", "text": f.text, "turn": f.turn, "kind": "fact", "witnesses": f.known_by} for f in new_facts]
+            new_docs += [{"id": f"s{from_turn}-{to_turn}", "text": summ.text, "turn": to_turn,
+                          "kind": "summary", "witnesses": wit}]
+            new_docs += [{"id": f"f{f.id}", "text": f.text, "turn": f.turn, "kind": "fact",
+                          "witnesses": f.known_by} for f in new_facts]
             msgs.append(f"Архив: ходы {from_turn}–{to_turn} ({acc} ток.) → сводка, фактов +{len(new_facts)}")
-        # layer compression also uses the still-cached old prefix + tail, then everything is applied at once
+        if cancel and cancel.is_set():
+            # still apply — summaries are valid; skip compress/re-warm upstream
+            scene.summaries = summaries
+            scene.archived_upto = pending[-1][2]; scene.archived_turn = pending[-1][1] + 1
+            if self.mem:
+                try: await asyncio.to_thread(self.mem.add, scene.id, new_docs)
+                except Exception as ex: print("memory add error", ex)
+            return "; ".join(msgs) + " (прервано, без сжатия слоёв)"
         scene.summaries = await self.compress(scene, summaries, calls)
         scene.archived_upto = pending[-1][2]; scene.archived_turn = pending[-1][1] + 1
         if self.mem:
@@ -273,14 +330,20 @@ class TurnEngine:
         return total
 
     async def background(self, scene, emit=None):
-        """After a turn: archive when the unarchived window is too long, then re-warm the narrator cache.
-        Runs only when the slot is idle (llm.complete waits on /slots) and holds the turn lock."""
+        """Archive when the unarchived window is too long, then re-warm.
+        Holds the turn lock only while mutating scene / calling the LLM, and checks
+        `bg_cancel` so a waiting player turn always wins the slot. Re-warm is skipped
+        if a player is waiting (their turn will rebuild the cache naturally)."""
         if self.bg_running or not config.MEMORY:
             return
         self.bg_running = True
         try:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
+            if self.bg_cancel.is_set() or self.lock.locked():
+                return
             async with self.lock:
+                if self.bg_cancel.is_set():
+                    return
                 tt = await self.turn_tokens(scene)
                 recent = sum(x[2] for x in tt)
                 if recent <= config.RECENT_MAX:
@@ -289,21 +352,30 @@ class TurnEngine:
                 if emit:
                     try: await emit({"type": "memory", "text": "🧠 Архивация памяти…"})
                     except Exception: emit = None
-                # archive down to a low watermark so the expensive re-warm (full re-read) happens rarely
                 target = config.RECENT_MAX - 2 * config.ARCHIVE_BLOCK
                 n = max(1, -(-(recent - target) // config.ARCHIVE_BLOCK))
-                m = await self.archive_block(scene, calls, n_blocks=n)
+                m = await self.archive_block(scene, calls, n_blocks=n, cancel=self.bg_cancel)
                 msgs = [m] if m else []
                 recent = sum(x[2] for x in await self.turn_tokens(scene))
-                st = await self.llm.warm(self.prompt(scene)); st["kind"] = "re-warm"; calls.append(st)
+                cancelled = self.bg_cancel.is_set()
+                if not cancelled:
+                    st = await self.llm.warm(self.prompt(scene)); st["kind"] = "re-warm"; calls.append(st)
+                else:
+                    calls.append({"kind": "re-warm skipped (player waiting)", "prompt_n": 0, "cache_n": 0})
                 entry = {"background": True, "after_turn": scene.turn, "wall_s": round(time.time() - t0, 2),
-                         "calls": calls, "msgs": msgs, "recent_tokens": recent}
+                         "calls": calls, "msgs": msgs, "recent_tokens": recent, "cancelled": cancelled}
                 scene.stats.append(entry)
                 store.save_scene(scene)
                 if emit:
-                    try: await emit({"type": "memory", "text": "🧠 " + "; ".join(msgs) + f" · {entry['wall_s']} с", "stats": entry,
-                                     "state": self.state(scene)})
-                    except Exception: pass
+                    try:
+                        note = "🧠 " + ("; ".join(x for x in msgs if x) or "готово")
+                        if cancelled:
+                            note += " · прервано ходом игрока"
+                        else:
+                            note += f" · {entry['wall_s']} с"
+                        await emit({"type": "memory", "text": note, "stats": entry, "state": self.state(scene)})
+                    except Exception:
+                        pass
         finally:
             self.bg_running = False
 
@@ -324,6 +396,34 @@ class TurnEngine:
                 act += 1
         return act
 
+    def mark_active(self, scene, *ids_or_names):
+        for x in ids_or_names:
+            if not x: continue
+            c = scene.characters.get(x) if x in scene.characters else M.resolve_character(scene, x)
+            if c:
+                c.last_active_turn = scene.turn
+
+    def prune_inactive(self, scene) -> list[str]:
+        """Auto-leave NPCs not spoken/mentioned for N turns. Player never pruned. History/witnesses kept."""
+        n = scene.settings.inactive_leave
+        if n is None:
+            n = config.INACTIVE_LEAVE
+        if n <= 0:
+            return []
+        msgs = []
+        for cid in list(scene.present):
+            if cid == scene.player_id:
+                continue
+            c = scene.characters[cid]
+            # seed last_active for characters that never got a stamp
+            if c.last_active_turn == 0 and cid in scene.initial_present:
+                c.last_active_turn = 1
+            if scene.turn - c.last_active_turn >= n:
+                scene.present.remove(cid)
+                msgs.append(f"{c.name} больше не в сцене (давно не появлялся).")
+                self.log(scene, "system", msgs[-1], "Система")
+        return msgs
+
     def _signals(self, scene):
         prev = [e for e in scene.log if e.turn == scene.turn]
         introduced = any(e.kind == "system" and e.text.startswith("Новый персонаж") for e in prev)
@@ -337,17 +437,27 @@ class TurnEngine:
         introduced, last_tier, combat = self._signals(scene)
         scene.turn += 1; scene.turn_exp = 0
         calls = []
+        # auto-leave inactive NPCs before budgeting
+        prune_msgs = self.prune_inactive(scene)
         npcs = self.active_npcs(scene)
         st_ = scene.settings
-        budget = turn_budget(text, npcs, introduced, last_tier, combat, st_.length_mult, st_.max_speaks)
+        budget = turn_budget(text, npcs, introduced, last_tier, combat or scene.combat.active,
+                             st_.length_mult, st_.max_speaks)
         if text is not None:
             await emit({"type": "player", "text": text, "turn": scene.turn})
             self.log(scene, "player", text, scene.player.name)
+            self.mark_active(scene, scene.player_id)
+            # mention detection for NPCs named in the player's input
+            for cid in list(scene.present):
+                if cid != scene.player_id and scene.characters[cid].name.lower() in text.lower():
+                    self.mark_active(scene, cid)
         else:
             await emit({"type": "continue", "turn": scene.turn})
+        for msg in prune_msgs:
+            await self.sys_msg(emit, scene, "🚪 " + msg)
         prompt_tokens = await self.ensure_budget(scene, calls) if config.MEMORY else None
-        last_narr = " ".join(e.text for e in scene.log[-4:] if e.kind in ("narration", "speech"))[-300:]
-        mems = await self.retrieve(scene, (text or "") + " " + last_narr, scene.player_id, config.RETRIEVE_K)
+        last_narr = " ".join(e.text for e in scene.log[-6:] if e.kind in ("narration", "speech", "player"))[-400:]
+        mems = await self.retrieve(scene, (text or "") + " " + last_narr, scene.player_id, config.RETRIEVE_K, last_narr)
         scene.memory_injected += [f"{m['id']}|{scene.turn}" for m in mems]
         mem_lines = [f"(ход {m['turn']}) {m['text'][:220]}" for m in mems]
         scene.turns.append({"role": "user", "content": P.player_message(scene, M.state_line(scene), text,
@@ -474,6 +584,7 @@ class TurnEngine:
             line = await self._speak(scene, c, a.get("intent", ""), emit, calls)
             transcript.append({"kind": "speech", "who": c.name, "text": line})
             self.log(scene, "speech", line, c.name)
+            self.mark_active(scene, c.id)
             return f"{c.name}: «{line}»"
         if tag.name == "roll":
             who = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
@@ -511,6 +622,63 @@ class TurnEngine:
             scene.present.remove(c.id)
             self.log(scene, "system", f"{c.name} уходит.", "Система")
             return f"{c.name} покидает сцену."
+        if tag.name == "attack":
+            atk = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
+            tgt = M.resolve_character(scene, a.get("target", ""))
+            if not tgt:
+                return f"Нет цели «{a.get('target')}»."
+            if scene.rule_mode == "система" and not scene.combat.active:
+                # still allow attack; combat.attack uses no-dice path
+                pass
+            r = C.attack(scene, atk, tgt, a.get("weapon", ""))
+            full = r["text"]
+            if r["msgs"]:
+                full += "\n" + "\n".join(r["msgs"])
+            if scene.combat.active:
+                adv = C.advance_turn(scene)
+                if adv:
+                    full += "\n" + adv
+            await self.sys_msg(emit, scene, full, "roll")
+            transcript.append({"kind": "roll", "text": full})
+            self.log(scene, "roll", r["text"], atk.name)
+            self.mark_active(scene, atk.id, tgt.id)
+            return r["text"] + " Опиши последствия удара."
+        if tag.name == "combat":
+            act = (a.get("action") or "").lower()
+            if act in ("start", "begin", "бой"):
+                foes = [x.strip() for x in (a.get("foes") or a.get("who") or "").split(",") if x.strip()]
+                ids = []
+                for f in foes:
+                    c = M.resolve_character(scene, f) or await self._introduce(scene, f, "", emit, transcript)
+                    ids.append(c.id)
+                text = C.start_combat(scene, ids or [i for i in scene.present if i != scene.player_id][:4])
+                await self.sys_msg(emit, scene, text, "roll")
+                transcript.append({"kind": "roll", "text": text})
+                self.log(scene, "system", text, "Система")
+                return text
+            if act in ("end", "stop", "конец"):
+                text = C.end_combat(scene)
+                await self.sys_msg(emit, scene, text)
+                return text
+            return C.combat_status(scene)
+        if tag.name == "condition":
+            c = M.resolve_character(scene, a.get("who", ""))
+            if not c:
+                return f"Нет персонажа «{a.get('who')}»."
+            try:
+                turns = max(1, int(a.get("turns") or 2))
+            except ValueError:
+                turns = 2
+            try:
+                pot = max(0, int(a.get("potency") or 0))
+            except ValueError:
+                pot = 0
+            text = C.apply_condition(c, a.get("name", ""), turns, pot)
+            await self.sys_msg(emit, scene, "⚙️ " + text)
+            transcript.append({"kind": "system", "text": text})
+            self.log(scene, "system", text, "Система")
+            self.mark_active(scene, c.id)
+            return text
         return "Неизвестное действие."
 
     async def _introduce(self, scene, name, desc, emit, transcript):
@@ -521,6 +689,7 @@ class TurnEngine:
             return ex
         c = new_character(scene, name, desc)
         scene.present.append(c.id)
+        c.last_active_turn = scene.turn
         store.save_card(c)
         msg = f"Новый персонаж: {c.name}" + (f" — {desc}" if desc else "")
         await self.sys_msg(emit, scene, msg)
