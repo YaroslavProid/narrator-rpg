@@ -240,11 +240,73 @@ main { position: relative; flex: 1; min-height: 0; display: flex; }
 .dropcap { float: left; position: relative; width: 84px; height: 84px; margin: 6px 14px 0 0; border: 2px solid var(--gold); box-shadow: inset 0 0 0 3px var(--paper-2), inset 0 0 0 4px var(--orn);
   background: var(--paper-2); text-indent: 0; text-align: center; font: 700 66px/82px var(--f-head); color: var(--rubric-hi); }
 .dropcap svg { position: absolute; inset: 0; color: var(--orn); }
-.turn { position: relative; display: flex; align-items: center; gap: 12px; margin: 30px 0 14px; color: var(--orn); }
-.turn .ln { flex: 1; height: 1px; background: currentColor; opacity: .7; }
-.turn .lb { font: 700 17px/1 var(--f-sc); letter-spacing: .16em; color: var(--rubric); }
-.turn .rb { position: absolute; right: 0; top: -30px; opacity: 0; transition: opacity .2s; min-height: 30px; padding: 2px 8px; background: var(--paper); border: 0; cursor: pointer;
-  font: 400 14px/1 var(--f-sc); letter-spacing: .06em; color: var(--ink-soft); }
+.story > [data-turn] {
+  position: relative;
+  margin: 8px 0 28px;
+  padding: 0 0 22px;
+}
+.story > [data-turn] + [data-turn] {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.story > [data-turn]::after {
+  content: "";
+  display: block;
+  height: 0;
+  margin: 18px 12% 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--orn) 45%, transparent);
+  box-shadow: 0 6px 0 -5px color-mix(in srgb, var(--orn) 22%, transparent);
+}
+.story > [data-turn]:last-of-type::after { display: none; }
+.turn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 36px 0 18px;
+  color: var(--orn);
+}
+.turn .ln {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor 12%, currentColor 88%, transparent);
+  opacity: .95;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--gold, #c4a574) 35%, transparent);
+}
+.turn .lb {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--orn) 70%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--orn) 28%, transparent);
+  outline-offset: 3px;
+  background: color-mix(in srgb, var(--paper-2, #2a221b) 88%, #000);
+  font: 700 18px/1 var(--f-sc);
+  letter-spacing: .2em;
+  color: var(--rubric-hi, var(--rubric));
+  text-shadow: 0 1px 0 rgba(0,0,0,.45);
+}
+.turn .dia {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--orn);
+  opacity: .9;
+}
+.turn .rb {
+  position: absolute;
+  right: 0;
+  top: -30px;
+  opacity: 0;
+  transition: opacity .2s;
+  min-height: 30px;
+  padding: 2px 8px;
+  background: var(--paper);
+  border: 0;
+  cursor: pointer;
+  font: 400 14px/1 var(--f-sc);
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+}
 .turn:hover .rb, .turn .rb:focus-visible { opacity: 1; }
 @media (hover: none) { .turn .rb { opacity: .7; } }
 .turn .rb:hover { color: var(--rubric); }
@@ -275,7 +337,15 @@ main { position: relative; flex: 1; min-height: 0; display: flex; }
 .e-mem { margin: 14px 0; text-align: center; font-style: italic; font-size: 15px; color: var(--ink-soft); }
 .e-err { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin: 12px 0; font-style: italic; font-size: 18px; color: var(--rubric); }
 .e-err button { min-height: 36px; padding: 2px 6px; background: none; border: 0; border-bottom: 1px solid var(--rubric); cursor: pointer; font: 700 15px/1 var(--f-sc); font-style: normal; letter-spacing: .06em; color: var(--rubric); }
-.meta { margin: 6px 0 0; text-align: right; font: 400 14px/1.3 var(--f-sc); letter-spacing: .06em; color: var(--ink-soft); }
+.meta {
+  margin: 16px 0 4px;
+  padding-top: 10px;
+  border-top: 1px dashed color-mix(in srgb, var(--orn) 35%, transparent);
+  text-align: right;
+  font: 400 14px/1.3 var(--f-sc);
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+}
 .blot { display: inline-block; width: .5em; height: .5em; margin-left: 4px; border-radius: 46% 54% 60% 40%/50% 42% 58% 50%; background: var(--ink); animation: blot 1.1s ease-in-out infinite; vertical-align: .05em; }
 @keyframes blot { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.65); opacity: .5; } }
 .writing { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-style: italic; font-size: 19px; color: var(--ink-soft); }

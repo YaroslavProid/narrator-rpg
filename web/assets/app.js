@@ -394,7 +394,7 @@ function startTurn(n, text, rewindable = true, animate = true) {
   removeWriting();
   const t = document.createElement('div'); t.dataset.turn = n;
   if (animate) t.className = 'ink-in';
-  t.innerHTML = `<div class="turn"><span class="ln"></span><span class="lb">Ход ${roman(n)}</span><span class="ln"></span>${rewindable ? '<button class="rb">↶ откатить к этому ходу</button>' : ''}</div>
+  t.innerHTML = `<div class="turn"><span class="ln"></span><svg class="dia" aria-hidden="true"><use href="#diamond"/></svg><span class="lb">ХОД ${roman(n)}</span><svg class="dia" aria-hidden="true"><use href="#diamond"/></svg><span class="ln"></span>${rewindable ? '<button class="rb">↶ откатить к этому ходу</button>' : ''}</div>
     ${text == null ? `<div class="e-player e-world">${QUILL()}<span class="h">Мир продолжает жить…</span></div>`
                    : `<div class="e-player">${QUILL()}<span class="h">${esc(text)}</span></div>`}`;
   const rb = t.querySelector('.rb');
