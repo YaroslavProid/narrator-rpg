@@ -2,912 +2,255 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0c0b0a">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#0b0a08">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <title>Narrator RPG</title>
-<style>
-:root {
-  --bg: #0c0b0a;
-  --bg2: #141210;
-  --pn: #1a1814;
-  --pn2: #221f1a;
-  --line: #2e2a24;
-  --line2: #3d372e;
-  --tx: #ece7dc;
-  --tx2: #c4bdb0;
-  --mu: #8a8378;
-  --ac: #d4a84b;
-  --ac2: #a67c2d;
-  --ac-dim: rgba(212, 168, 75, .12);
-  --sp: #7eb8e8;
-  --sp-dim: rgba(126, 184, 232, .1);
-  --sy: #7ecf8a;
-  --sy-dim: rgba(126, 207, 138, .1);
-  --roll: #e8c07a;
-  --roll-dim: rgba(232, 192, 122, .1);
-  --mem: #b9a3e3;
-  --mem-dim: rgba(185, 163, 227, .1);
-  --danger: #d46a5a;
-  --hp: #c45a5a;
-  --mp: #5a8ac4;
-  --xp: #c4a05a;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 4px 24px rgba(0,0,0,.45);
-  --font: "Segoe UI", "Helvetica Neue", "Noto Sans", "Roboto", system-ui, sans-serif;
-  --mono: "Cascadia Code", "SF Mono", "Consolas", ui-monospace, monospace;
-  --header-h: 52px;
-  --foot-h: 64px;
-  --safe-b: env(safe-area-inset-bottom, 0px);
-  --safe-t: env(safe-area-inset-top, 0px);
-}
-*, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0;
-  background: var(--bg);
-  background-image:
-    radial-gradient(ellipse 120% 80% at 50% -20%, #1f1a12 0%, transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 100%, #12101a 0%, transparent 50%);
-  color: var(--tx);
-  font: 16px/1.55 var(--font);
-  height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding-top: var(--safe-t);
-}
-button {
-  font: inherit;
-  cursor: pointer;
-  background: var(--pn2);
-  color: var(--tx);
-  border: 1px solid var(--line2);
-  border-radius: var(--radius-sm);
-  padding: .55rem .9rem;
-  min-height: 44px;
-  transition: background .15s, border-color .15s, transform .1s;
-  -webkit-tap-highlight-color: transparent;
-}
-button:hover { background: #2a261f; border-color: #4a4338; }
-button:active { transform: scale(.97); }
-button.pri {
-  background: linear-gradient(180deg, #e0b55a, var(--ac));
-  color: #1a1408;
-  border: 0;
-  font-weight: 600;
-  box-shadow: 0 1px 0 rgba(255,255,255,.15) inset, 0 2px 8px rgba(212,168,75,.25);
-}
-button.pri:hover { filter: brightness(1.05); }
-button:disabled { opacity: .45; pointer-events: none; }
-button.icon {
-  width: 44px; height: 44px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 1.15rem; flex-shrink: 0;
-}
-button.ghost {
-  background: transparent; border-color: transparent; color: var(--mu);
-}
-button.ghost:hover { color: var(--tx); background: var(--ac-dim); }
-
-/* —— Header —— */
-header {
-  display: flex; gap: .5rem; align-items: center;
-  padding: .4rem .75rem;
-  min-height: var(--header-h);
-  background: rgba(26, 24, 20, .92);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
-  z-index: 20;
-}
-header .brand {
-  display: flex; flex-direction: column; flex: 1; min-width: 0; gap: .05rem;
-}
-header h1 {
-  font-size: 1rem; font-weight: 600; margin: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  letter-spacing: .01em;
-}
-header .sub {
-  font-size: .7rem; color: var(--mu); letter-spacing: .04em; text-transform: uppercase;
-}
-
-/* —— Views —— */
-.view {
-  display: none; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 1rem 1rem calc(1rem + var(--safe-b));
-  max-width: 720px; width: 100%; margin: 0 auto;
-}
-.view.on { display: block; }
-.view-head {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: .75rem; margin-bottom: 1rem; flex-wrap: wrap;
-}
-.view-head h2 { margin: 0; font-size: 1.35rem; font-weight: 650; letter-spacing: -.01em; }
-.view-head .hint { margin: 0; }
-
-.card {
-  background: var(--pn);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 1rem 1.1rem;
-  margin: .65rem 0;
-  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
-}
-.card.scene {
-  cursor: pointer; transition: border-color .15s, background .15s;
-}
-.card.scene:hover, .card.scene:active {
-  border-color: var(--ac2); background: var(--pn2);
-}
-.card.scene b { font-size: 1.05rem; display: block; margin-bottom: .25rem; }
-.card .meta {
-  display: flex; flex-wrap: wrap; gap: .35rem .6rem;
-  margin-top: .5rem;
-}
-.badge {
-  display: inline-flex; align-items: center; gap: .25rem;
-  font-size: .72rem; color: var(--tx2);
-  background: var(--bg2); border: 1px solid var(--line);
-  border-radius: 999px; padding: .15rem .55rem;
-}
-.badge.ac { color: var(--ac); border-color: rgba(212,168,75,.35); background: var(--ac-dim); }
-
-.card-title {
-  font-size: .8rem; font-weight: 600; color: var(--ac);
-  letter-spacing: .06em; text-transform: uppercase;
-  margin: 0 0 .75rem;
-}
-
-label {
-  display: block; margin: .7rem 0 .3rem;
-  color: var(--mu); font-size: .8rem; font-weight: 500;
-}
-label:first-child { margin-top: 0; }
-textarea, input, select {
-  background: var(--bg);
-  color: var(--tx);
-  border: 1px solid var(--line2);
-  border-radius: var(--radius-sm);
-  padding: .65rem .75rem;
-  font: inherit; width: 100%;
-  transition: border-color .15s;
-}
-textarea:focus, input:focus, select:focus {
-  outline: none; border-color: var(--ac2);
-  box-shadow: 0 0 0 3px var(--ac-dim);
-}
-.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
-.row.actions { margin-top: 1rem; padding-bottom: .5rem; }
-.hint { color: var(--mu); font-size: .8rem; line-height: 1.4; }
-.empty {
-  text-align: center; padding: 2.5rem 1rem; color: var(--mu);
-}
-.empty .ico { font-size: 2rem; margin-bottom: .5rem; opacity: .6; }
-
-.npc {
-  border: 1px dashed var(--line2);
-  border-radius: var(--radius-sm);
-  padding: .75rem;
-  margin: .65rem 0;
-  background: var(--bg2);
-}
-.npc .nn { margin-bottom: .4rem; }
-
-/* —— Game —— */
-#vGame {
-  display: none; flex: 1; overflow: hidden; position: relative;
-  max-width: none; margin: 0; padding: 0;
-}
-#vGame.on-game { display: flex; }
-
-#chat {
-  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: .85rem 1rem 1.25rem;
-  scroll-behavior: smooth;
-  max-width: 820px; width: 100%; margin: 0 auto;
-}
-
-.m {
-  margin: .55rem 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.55;
-  animation: fadeIn .2s ease;
-}
-@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-
-.m.narration {
-  font-style: italic;
-  color: var(--tx2);
-  padding: .35rem 0 .35rem .85rem;
-  border-left: 2px solid var(--line2);
-}
-.m.speech {
-  background: var(--sp-dim);
-  border: 1px solid rgba(126, 184, 232, .18);
-  border-radius: var(--radius-sm);
-  padding: .55rem .75rem;
-}
-.m.speech b {
-  color: var(--sp);
-  font-weight: 650;
-  font-style: normal;
-}
-.m.player {
-  color: var(--ac);
-  background: var(--ac-dim);
-  border-left: 3px solid var(--ac);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  padding: .55rem .75rem .55rem .85rem;
-  position: relative;
-}
-.m.player .rw {
-  float: right;
-  background: transparent; border: 0; color: var(--mu);
-  padding: 0 .25rem; min-height: 28px; font-size: 1rem;
-  margin: -.15rem 0 0 .5rem;
-}
-.m.player .rw:hover { color: var(--ac); }
-.m.system, .m.roll {
-  font-family: var(--mono);
-  font-size: .82rem;
-  border-radius: var(--radius-sm);
-  padding: .55rem .75rem;
-  line-height: 1.45;
-}
-.m.system {
-  background: var(--sy-dim);
-  color: var(--sy);
-  border: 1px solid rgba(126, 207, 138, .2);
-}
-.m.roll {
-  background: var(--roll-dim);
-  color: var(--roll);
-  border: 1px solid rgba(232, 192, 122, .22);
-}
-.m.mem {
-  color: var(--mem);
-  background: var(--mem-dim);
-  border-radius: var(--radius-sm);
-  padding: .4rem .7rem;
-  font-size: .8rem;
-  border: 1px solid rgba(185, 163, 227, .18);
-}
-.turnstat {
-  color: var(--mu);
-  font-size: .68rem;
-  text-align: right;
-  margin: .15rem 0 .6rem;
-  opacity: .75;
-}
-
-/* —— Side panel —— */
-#backdrop {
-  display: none; position: absolute; inset: 0;
-  background: rgba(0,0,0,.55); z-index: 8;
-}
-#backdrop.show { display: block; }
-#side {
-  width: min(340px, 88vw);
-  background: var(--pn);
-  border-left: 1px solid var(--line);
-  overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: .9rem 1rem calc(1rem + var(--safe-b));
-  position: absolute; right: 0; top: 0; bottom: 0;
-  transform: translateX(100%);
-  transition: transform .22s cubic-bezier(.2,.8,.2,1);
-  z-index: 10;
-  box-shadow: var(--shadow);
-}
-#side.open { transform: none; }
-#side .side-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: .75rem; padding-bottom: .5rem;
-  border-bottom: 1px solid var(--line);
-}
-#side .side-head strong { font-size: .95rem; }
-#side h3 {
-  margin: 1rem 0 .4rem;
-  font-size: .72rem; font-weight: 650;
-  color: var(--ac); letter-spacing: .07em; text-transform: uppercase;
-}
-#side h3:first-of-type { margin-top: .35rem; }
-.stat-block { margin-bottom: .35rem; }
-.stat-name {
-  font-size: 1.05rem; font-weight: 650; margin-bottom: .35rem;
-}
-.stat-row {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: .8rem; color: var(--tx2); margin-bottom: .2rem;
-}
-.bar {
-  height: 7px; background: var(--bg);
-  border-radius: 4px; overflow: hidden;
-  border: 1px solid var(--line); margin-bottom: .4rem;
-}
-.bar i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
-.attrs {
-  display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .5rem;
-  font-size: .78rem; color: var(--tx2); margin: .4rem 0;
-}
-.attrs span { display: flex; justify-content: space-between; gap: .35rem; }
-.attrs span em { font-style: normal; color: var(--mu); }
-.list-plain { font-size: .85rem; color: var(--tx2); line-height: 1.6; }
-.list-plain .eq { color: var(--ac); }
-.combat-box {
-  background: rgba(212, 100, 80, .08);
-  border: 1px solid rgba(212, 100, 80, .25);
-  border-radius: var(--radius-sm);
-  padding: .55rem .7rem;
-  font-size: .85rem;
-}
-.combat-box .cur { color: var(--danger); font-weight: 600; }
-#side input[type=range] {
-  padding: 0; height: 28px; accent-color: var(--ac);
-}
-#side input[type=number] { margin-bottom: .35rem; }
-
-/* —— Footer —— */
-footer {
-  display: none;
-  flex-direction: column;
-  gap: .4rem;
-  padding: .5rem .75rem calc(.5rem + var(--safe-b));
-  background: rgba(26, 24, 20, .95);
-  backdrop-filter: blur(12px);
-  border-top: 1px solid var(--line);
-  z-index: 15;
-}
-footer.show { display: flex; }
-.composer {
-  display: flex; gap: .4rem; align-items: flex-end;
-}
-footer textarea {
-  flex: 1; resize: none; min-height: 44px; max-height: 120px;
-  height: 44px; line-height: 1.4;
-  padding: .7rem .85rem;
-}
-.toolbar {
-  display: flex; gap: .35rem; flex-wrap: wrap;
-}
-.toolbar button {
-  flex: 1; min-width: 0;
-  font-size: .82rem; padding: .45rem .5rem; min-height: 40px;
-}
-.toolbar button .lbl { display: none; }
-.busy-bar {
-  display: none; height: 2px; background: var(--line);
-  overflow: hidden; margin: -.5rem -.75rem .15rem;
-}
-.busy-bar.on { display: block; }
-.busy-bar i {
-  display: block; height: 100%; width: 40%;
-  background: linear-gradient(90deg, transparent, var(--ac), transparent);
-  animation: slide 1.1s ease-in-out infinite;
-}
-@keyframes slide {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(350%); }
-}
-
-/* —— Desktop —— */
-@media (min-width: 900px) {
-  header { padding: .5rem 1.25rem; }
-  #chat { padding: 1.25rem 1.5rem 1.5rem; }
-  #side {
-    position: relative; transform: none !important;
-    box-shadow: none; flex-shrink: 0;
-    border-left: 1px solid var(--line);
-    display: block !important;
-  }
-  #backdrop { display: none !important; }
-  #bSide { display: none !important; }
-  .toolbar button .lbl { display: inline; margin-left: .3rem; }
-  footer { padding: .65rem 1.25rem .75rem; max-width: none; }
-  .composer { max-width: 820px; margin: 0 auto; width: 100%; }
-  .toolbar { max-width: 820px; margin: 0 auto; width: 100%; }
-  .view { padding: 1.5rem 1.5rem 2rem; }
-}
-@media (min-width: 1100px) {
-  #side { width: 360px; }
-}
-</style>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%233b2318'/%3E%3Crect x='5' y='4' width='22' height='24' rx='1' fill='none' stroke='%23b08d4a' stroke-width='1.5'/%3E%3Cpath d='M11 24L15 17M15 17C16 11 19 8 23 7 22 11 20 15 15 17Z' fill='none' stroke='%23e58a6c' stroke-width='1.4'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=Cormorant+SC:wght@500;600;700&family=Marck+Script&display=swap">
+<link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
-<header>
-  <button class="icon ghost" id="bBack" onclick="showList()" title="Сцены" aria-label="Сцены">☰</button>
-  <div class="brand">
-    <h1 id="title">Narrator RPG</h1>
-    <div class="sub" id="subtitle">локальный рассказчик</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="gm" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.011 0.018" numOctaves="3" seed="8"/><feColorMatrix type="matrix" values="0 0 0 0 0.34 0 0 0 0 0.21 0 0 0 0 0.08 0 0 0 1.2 -0.55"/></filter>
+    <filter id="gg" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/><feColorMatrix type="matrix" values="0 0 0 0 0.3 0 0 0 0 0.2 0 0 0 0 0.1 0 0 0 0.35 0"/></filter>
+    <filter id="lth" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="3" seed="7"/><feColorMatrix type="matrix" values="0 0 0 0 0.6 0 0 0 0 0.45 0 0 0 0 0.3 0 0 0 0.9 -0.1"/></filter>
+  </defs>
+  <symbol id="quill" viewBox="0 0 22 26"><path d="M3 24 L 9 14 M9 14 C 10 6, 15 2, 20 1 C 19 6, 16 12, 9 14 Z M11 11 L 16 5" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
+  <symbol id="corner" viewBox="0 0 56 56"><path d="M4 52 V 10 C 4 6, 6 4, 10 4 H 52 M10 46 C 10 24, 24 10, 46 10 M16 16 C 22 12, 26 18, 20 22 C 15 25, 12 19, 16 16 Z" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
+  <symbol id="orn" viewBox="0 0 180 16"><path d="M4 8 H 72 M108 8 H 176 M90 2 L 96 8 L 90 14 L 84 8 Z M78 8 C 82 4, 84 4, 84 8 M102 8 C 98 4, 96 4, 96 8" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
+  <symbol id="diamond" viewBox="0 0 14 14"><path d="M7 1 L 13 7 L 7 13 L 1 7 Z" fill="var(--paper)" stroke="currentColor" stroke-width="1.2"/></symbol>
+  <symbol id="cap" viewBox="0 0 16 16"><path d="M1 1 H 11 L 1 11 Z" fill="#7c6a4a" stroke="#b9a172" stroke-width="0.8"/></symbol>
+  <symbol id="blotico" viewBox="0 0 18 16"><path d="M9 2 C 13 1, 17 5, 15 9 C 17 12, 13 15, 9 13 C 5 15, 1 12, 3 9 C 1 5, 5 1, 9 2 Z" fill="currentColor"/></symbol>
+</svg>
+
+<div class="fx fx-candle" aria-hidden="true"></div>
+<div class="fx fog" aria-hidden="true"></div>
+<div class="fx vignette" aria-hidden="true"></div>
+<div class="fx fx-dust" id="dust" aria-hidden="true"></div>
+<div id="vines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="tb-side"><button class="tb-link" id="bBack" hidden><svg aria-hidden="true" width="10" height="16" viewBox="0 0 10 16"><path d="M8 2 L 2 8 L 8 14" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="lbl">Полка</span></button></div>
+  <div class="tb-title"><b id="title">Narrator RPG</b><small id="subtitle">летописи</small></div>
+  <div class="tb-side r">
+    <span class="cand-lbl" id="candLbl"></span>
+    <svg class="candle" id="candle" role="img" aria-label="Связь с рассказчиком" width="22" height="40" viewBox="0 0 22 40">
+      <title id="candTitle">Связь с рассказчиком</title>
+      <path class="flame" d="M11 2 C 14 7, 15 10, 15 12.5 C 15 15, 13.2 16.6, 11 16.6 C 8.8 16.6, 7 15, 7 12.5 C 7 10, 8.6 7.6, 11 2 Z" fill="#f2b552"/>
+      <path class="flame" d="M11 7.5 C 12.4 10, 12.8 11.6, 12.8 12.8 C 12.8 14, 12 14.9, 11 14.9 C 10 14.9, 9.2 14, 9.2 12.8 C 9.2 11.6, 9.8 10.2, 11 7.5 Z" fill="#fff1c4"/>
+      <path class="smoke" d="M11 14 C 8 10, 14 8, 11 4 C 9 1, 12 -1, 11 -4" fill="none" stroke="rgba(200,190,170,0.6)" stroke-width="1.2"/>
+      <path d="M11 15.5 V 19" stroke="#2a1c11" stroke-width="1.3"/>
+      <path d="M5 19 H 17 V 38 H 5 Z" fill="#d9ccae" stroke="#8a7a5c" stroke-width="1"/>
+      <path d="M5 19 C 6 23, 8 21, 8.5 25 C 9 27, 10 26, 10 22" fill="none" stroke="#b9aa8a" stroke-width="1"/>
+      <path d="M1 38 H 21" stroke="#8a6a32" stroke-width="2"/>
+    </svg>
+    <button class="vitals" id="vitals" hidden aria-label="Лист героя"></button>
   </div>
-  <button class="icon ghost" id="bSide" onclick="toggleSide()" title="Персонаж" aria-label="Персонаж" style="display:none">◈</button>
 </header>
+<div class="banner" id="netBanner" hidden>Связь с сервером прервалась — пытаюсь вернуть…</div>
 
-<div id="vList" class="view on">
-  <div class="view-head">
-    <h2>Сцены</h2>
-    <div class="row">
-      <button class="ghost icon" onclick="loadList()" title="Обновить">↻</button>
-      <button class="pri" onclick="showNew()">+ Новая</button>
+<main>
+  <!-- ===== Полка ===== -->
+  <section class="view scroll" id="vShelf">
+    <div class="shelf-wrap">
+      <p class="kicker">Narrator RPG</p>
+      <h1>Летописи</h1>
+      <p class="lede" id="shelfLede">Сними с полки начатую историю или открой чистую книгу.</p>
+      <svg class="orn-line" aria-hidden="true" width="200" height="16"><use href="#orn"/></svg>
+      <div id="shelf" style="width:100%"></div>
     </div>
-  </div>
-  <div id="list"></div>
-</div>
+  </section>
 
-<div id="vNew" class="view">
-  <div class="view-head">
-    <h2>Новая сцена</h2>
-    <button class="ghost" onclick="showList()">Отмена</button>
-  </div>
-  <div class="card" id="createForm">
-    <div class="card-title">Замысел</div>
-    <label>Название (можно оставить — ИИ уточнит)</label>
-    <input id="nTitle" value="Таверна «Серый Брод»" placeholder="Краткий заголовок">
-    <label>Зерно мира / премис</label>
-    <textarea id="nPremise" rows="3" placeholder="Тон, место, крючок…">Мрачное фэнтези. Пограничный городок у болот, дождь, долги и контрабанда.</textarea>
-    <label>Режим правил (один раз при создании)</label>
-    <select id="nMode">
-      <option value="d20">d20 — проверки с бросками</option>
-      <option value="система">Система — только статы, без бросков</option>
-    </select>
-  </div>
-  <div class="card" id="createPc">
-    <div class="card-title">Ваш персонаж</div>
-    <p class="hint">Атрибуты, способности (актив/пассив) и стартовый набор подберёт ИИ. Проверки — по атрибутам, не по «ближнему бою».</p>
-    <label>Имя</label>
-    <input id="pName" value="Ярен" placeholder="Имя героя">
-    <label>Кратко о нём</label>
-    <textarea id="pBrief" rows="2" placeholder="Роль, цель, пара черт…">Бывший наёмник, ищет пропавший караван брата.</textarea>
-  </div>
-  <div class="card" id="createNpcs">
-    <div class="card-title">Стартовые NPC</div>
-    <p class="hint">Имя + пара слов — остальное допишет ИИ. Или укажите число — сгенерирует само.</p>
-    <div id="npcs"></div>
-    <div class="row" style="margin-top:.5rem;gap:.5rem;flex-wrap:wrap">
-      <button type="button" onclick="addNpc()">+ NPC</button>
-      <label style="display:flex;align-items:center;gap:.4rem;margin:0;flex:1;min-width:10rem">
-        <span style="white-space:nowrap;font-size:.85rem;color:var(--mu)">Или сгенерировать</span>
-        <input id="nNpcCount" type="number" min="0" max="8" value="0" style="width:3.5rem;margin:0" title="0 = только вручную добавленные">
-        <span style="font-size:.85rem;color:var(--mu)">NPC</span>
-      </label>
+  <!-- ===== Новая летопись ===== -->
+  <section class="view scroll" id="vNew">
+    <div style="height:14px"></div>
+    <div class="spread-wrap leather" id="newForm">
+      <div class="spread">
+        <section class="paper torn-l">
+          <svg class="grain"><rect width="100%" height="100%" filter="url(#gm)"/></svg>
+          <div class="spine-r"></div>
+          <div style="position:relative">
+            <h2 class="sec"><span class="num">I.</span>Мир</h2>
+            <p style="margin:0;font-size:17px;font-style:italic;color:var(--ink-soft)">О чём будет летопись. Чем меньше напишешь, тем больше придумает рассказчик.</p>
+            <label class="lbl" for="nTitle">Название <span class="hint">— можно оставить пустым</span></label>
+            <input id="nTitle" class="line" type="text" placeholder="рассказчик назовёт сам">
+            <label class="lbl" for="nPremise">Замысел <span class="hint">— две-три строки</span></label>
+            <textarea id="nPremise" class="lined" rows="4" placeholder="Таверна у брода, откуда никто не возвращается…"></textarea>
+            <span class="lbl">Или возьми заготовку</span>
+            <div id="ideas" style="display:flex;flex-wrap:wrap;gap:4px 18px"></div>
+            <span class="lbl" style="margin-top:26px">Правила</span>
+            <div style="display:flex;flex-wrap:wrap;gap:12px" id="modes">
+              <button class="mode on" data-mode="d20" aria-pressed="true"><span class="ring" aria-hidden="true">d20</span><span><b>Жребий · d20</b><small>проверки решает бросок</small></span></button>
+              <button class="mode" data-mode="система" aria-pressed="false"><span class="ring" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 30 30"><path d="M15 3 L 27 15 L 15 27 L 3 15 Z M15 9 L 21 15 L 15 21 L 9 15 Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></span><span><b>Система</b><small>только статы, без бросков</small></span></button>
+            </div>
+          </div>
+        </section>
+        <div class="gut" aria-hidden="true"></div>
+        <section class="paper torn-r">
+          <svg class="grain"><rect width="100%" height="100%" filter="url(#gm)"/></svg>
+          <div class="spine-l"></div>
+          <div style="position:relative">
+            <h2 class="sec"><span class="num">II.</span>Герой</h2>
+            <label class="lbl" for="pName">Имя</label>
+            <input id="pName" class="line" type="text" placeholder="Ярен">
+            <label class="lbl" for="pBrief">Пара строк о нём</label>
+            <textarea id="pBrief" class="lined" rows="2" placeholder="бывший наёмник, который однажды не взял денег"></textarea>
+            <h2 class="sec" style="margin-top:34px"><span class="num">III.</span>Действующие лица</h2>
+            <div id="npcs" style="display:flex;flex-direction:column"></div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:14px">
+              <button class="tbtn" id="bAddNpc">+ добавить действующее лицо</button>
+              <div style="display:flex;align-items:center;gap:10px;font-size:18px">
+                <span>и выдумать ещё</span>
+                <button class="step" id="npcMinus" aria-label="Меньше">−</button>
+                <span id="npcCount" aria-live="polite" style="min-width:22px;text-align:center;font:700 24px/1 var(--f-head);color:var(--rubric)">0</span>
+                <button class="step" id="npcPlus" aria-label="Больше">+</button>
+              </div>
+            </div>
+            <div style="margin-top:44px;display:flex;justify-content:center">
+              <button class="make" id="bGen"><span class="wax" aria-hidden="true" style="width:64px;height:62px"><svg width="30" height="32" viewBox="0 0 22 26" style="color:rgba(0,0,0,.5)"><use href="#quill"/></svg></span><span class="mk">Сотворить мир</span></button>
+            </div>
+            <p style="margin:12px 0 0;text-align:center;font-size:15px;font-style:italic;color:var(--ink-soft)">Обычно рассказчику нужно от половины минуты до полутора.</p>
+          </div>
+        </section>
+      </div>
     </div>
-  </div>
-  <div class="row actions" id="createActions">
-    <button class="pri" id="bGen" onclick="generateScene()" style="flex:1">Сгенерировать с ИИ</button>
-  </div>
-  <div class="card" id="preview" style="display:none">
-    <div class="card-title">Превью сцены</div>
-    <div id="previewBody"></div>
-    <div class="row actions" style="margin-top:.75rem">
-      <button class="ghost" onclick="backToForm()" style="flex:1">Изменить замысел</button>
-      <button class="pri" id="bConfirm" onclick="confirmScene()" style="flex:1">Начать сцену</button>
-    </div>
-  </div>
-</div>
+    <div class="spread-wrap leather" id="preview" hidden></div>
 
-<main id="vGame">
-  <div id="backdrop" onclick="closeSide()"></div>
-  <div id="chat"></div>
-  <aside id="side"></aside>
+    <div class="gen" id="gen" hidden>
+      <div class="gen-card paper" role="status" aria-live="polite">
+        <svg class="grain"><rect width="100%" height="100%" filter="url(#gm)"/></svg>
+        <p style="position:relative;margin:0;font:700 16px/1 var(--f-sc);letter-spacing:.24em;color:var(--ink-soft)">Сотворение мира</p>
+        <h1>Рассказчик склонился над страницей</h1>
+        <div class="gen-pen" aria-hidden="true">
+          <svg width="340" height="90" viewBox="0 0 340 90" style="position:absolute;inset:0;max-width:100%">
+            <path class="ink-line" d="M8 62 c 8 -14 14 -16 18 -6 c 3 8 8 10 14 -2 c 5 -10 10 -12 14 0 c 3 8 10 8 16 -4 s 12 -10 16 2 c 4 10 10 6 14 -4 c 4 -8 10 -8 14 2 c 4 8 12 6 16 -6 c 4 -10 12 -8 14 4 c 3 8 10 8 16 -4 s 10 -10 16 0 c 4 8 10 8 16 -2 c 4 -8 12 -6 14 4 c 3 8 10 6 16 -4 c 4 -6 10 -4 12 4 c 3 6 10 4 14 -4 c 4 -6 10 -4 14 4" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M4 72 H 336" stroke="var(--ink-faint)" stroke-width="1"/>
+          </svg>
+          <svg class="glide" width="44" height="60" viewBox="0 0 22 30" style="position:absolute;left:-6px;top:4px;color:var(--ink)"><path d="M3 28 L 9 16 M9 16 C 10 7, 15 2, 21 1 C 20 7, 16 14, 9 16 Z M11 13 L 17 5" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+        </div>
+        <p class="phrase" id="genMsg">Раскладывает карты местности…</p>
+        <div style="position:relative;display:flex;align-items:center;gap:12px;font-size:17px;color:var(--ink-soft)">
+          <span><b id="genSec" style="font:700 26px/1 var(--f-head);color:var(--ink)">0</b> с</span><span style="font-style:italic">· обычно 30–90 секунд</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Игра ===== -->
+  <section class="view" id="vGame">
+    <div class="book leather">
+      <div class="pages">
+        <section class="pl paper torn-l" aria-label="Повествование">
+          <svg class="grain"><rect width="100%" height="100%" filter="url(#gm)"/><rect width="100%" height="100%" filter="url(#gg)"/></svg>
+          <div class="coffee" aria-hidden="true"></div>
+          <div class="spine-r"></div>
+          <svg class="corner" aria-hidden="true" width="56" height="56" style="top:14px;left:18px"><use href="#corner"/></svg>
+          <svg class="corner" aria-hidden="true" width="56" height="56" style="bottom:14px;left:18px;transform:scaleY(-1)"><use href="#corner"/></svg>
+          <div class="feed-wrap">
+            <div class="scr" id="feed"><div class="col" id="story"></div></div>
+            <button class="tobot" id="toBottom" hidden>к последней строке ↓</button>
+          </div>
+          <div class="composer">
+            <div class="col">
+              <div class="qrow">
+                <button class="qbtn" id="bCont" title="Мир действует без вашего хода"><svg aria-hidden="true" width="14" height="18" viewBox="0 0 14 18"><path d="M2 1 H 12 M2 17 H 12 M3 1 C 3 6, 11 6, 11 9 C 11 12, 3 12, 3 17 M11 1 C 11 6, 3 6, 3 9 C 3 12, 11 12, 11 17" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>Продолжить</button>
+                <button class="qbtn" id="bRegen" title="Переписать последний ход"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><path d="M13 5 A 6 6 0 1 0 14 9 M13 1 V 5 H 9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>Переписать</button>
+                <div style="position:relative">
+                  <button class="qbtn" id="bSys" aria-expanded="false">Система ▾</button>
+                  <div class="menu" id="sysMenu" role="menu" hidden></div>
+                </div>
+                <span class="qhint">Enter — записать · Shift+Enter — новая строка · ↑ — прошлая запись</span>
+              </div>
+              <div class="wrow">
+                <label for="inp" class="sr">Действие героя</label>
+                <textarea id="inp" class="ruled scr" rows="2" placeholder="Что вы делаете?.." enterkeyhint="send"></textarea>
+                <button class="send" id="bSend" aria-label="Отправить">
+                  <span class="wax" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 22 26"><path d="M3 24 L 9 14 M9 14 C 10 6, 15 2, 20 1 C 19 6, 16 12, 9 14 Z M11 11 L 16 5" fill="none" stroke="rgba(0,0,0,0.45)" stroke-width="1.8"/><path d="M3 23 L 9 13 M9 13 C 10 5, 15 1, 20 0 C 19 5, 16 11, 9 13 Z" fill="none" stroke="rgba(255,215,190,0.35)" stroke-width="0.8"/></svg></span>
+                  <span id="sendLbl">Записать</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div class="gutter" aria-hidden="true"></div>
+        <aside class="rp paper torn-r" id="sheet" aria-label="Лист героя">
+          <svg class="grain"><rect width="100%" height="100%" filter="url(#gm)"/><rect width="100%" height="100%" filter="url(#gg)"/></svg>
+          <div class="spine-l"></div>
+          <svg class="corner" aria-hidden="true" width="56" height="56" style="bottom:14px;right:18px;transform:scale(-1,-1)"><use href="#corner"/></svg>
+          <button class="sheet-close" id="bSheetClose" aria-label="Закрыть лист героя"><svg width="18" height="18" viewBox="0 0 14 14"><path d="M2 2 L 12 12 M12 2 L 2 12" stroke="currentColor" stroke-width="1.5"/></svg></button>
+          <nav class="ribs" aria-label="Вкладки листа героя">
+            <button class="rib" data-tab="hero" style="--c:#6e1d12">Герой</button>
+            <button class="rib" data-tab="scene" style="--c:#2c4a3a">Сцена<span class="cnt" id="presentN"></span></button>
+            <button class="rib" data-tab="director" style="--c:#2c3a5c">Директор</button>
+            <button class="rib" data-tab="settings" style="--c:#6b5020">Настройки</button>
+          </nav>
+          <div class="panes scr">
+            <div class="pane" data-pane="hero" id="paneHero"></div>
+            <div class="pane" data-pane="scene" id="paneScene"></div>
+            <div class="pane" data-pane="director">
+              <section>
+                <h2 class="sh">Поручение</h2>
+                <label for="dirInp" style="display:block;margin-bottom:4px;font-size:15px;font-style:italic;color:var(--ink-soft)">Скажи Директору, что поправить в мире</label>
+                <textarea id="dirInp" class="ruled" rows="2" placeholder="дай Сильфе лук и колчан"></textarea>
+                <div style="display:flex;gap:18px;margin-top:12px"><button class="tbtn" id="bDir">Поручить</button><button class="tbtn" id="bAudit">Аудит</button></div>
+              </section>
+              <section><h2 class="sh">Журнал правок</h2><ul class="dlog" id="dirLog"></ul></section>
+            </div>
+            <div class="pane" data-pane="settings">
+              <section>
+                <h2 class="sh">Рассказчик</h2>
+                <label for="sMult" style="display:flex;justify-content:space-between;font-size:17px"><span>Длина ходов</span><b id="sMultV" style="font:700 19px/1 var(--f-head)">×1</b></label>
+                <input id="sMult" type="range" min="0.5" max="2" step="0.25" value="1">
+                <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--ink-soft)"><span>короче</span><span>длиннее</span></div>
+                <div class="set-grid">
+                  <label for="sMax">Реплик NPC за ход</label><input id="sMax" class="numin" type="number" min="1" max="10" placeholder="авто">
+                  <label for="sLeave">Уходит из сцены после тихих ходов <span class="sub">(0 — никогда)</span></label><input id="sLeave" class="numin" type="number" min="0" max="50" placeholder="5">
+                </div>
+              </section>
+              <section>
+                <h2 class="sh">Страницы</h2>
+                <div style="display:flex;align-items:center">
+                  <span style="margin-right:12px;font-size:17px">Размер текста</span>
+                  <button class="seg" data-size="s" aria-label="Мелкий текст" style="font-size:14px">А</button><button class="seg" data-size="m" aria-label="Обычный текст" style="font-size:17px">А</button><button class="seg" data-size="l" aria-label="Крупный текст" style="font-size:21px">А</button>
+                </div>
+              </section>
+              <section>
+                <h2 class="sh">Эффекты</h2>
+                <label class="chk"><input type="checkbox" data-fx="vines">Лианы</label>
+                <label class="chk"><input type="checkbox" data-fx="dust">Пыль в воздухе</label>
+                <label class="chk"><input type="checkbox" data-fx="candle">Отсвет свечи</label>
+                <label class="chk"><input type="checkbox" data-fx="meta">Служебная строка под ходом</label>
+              </section>
+              <section>
+                <h2 class="sh">Шпаргалка</h2>
+                <dl class="cheat">
+                  <dt>Система, осмотри Имя</dt><dd>раскрыть характеристики</dd>
+                  <dt>Система, статус</dt><dd>здоровье, мана, состояния</dd>
+                  <dt>Система, бой</dt><dd>порядок ходов и раунд</dd>
+                  <dt>Система, используй …</dt><dd>предмет из описи</dd>
+                  <dt>Система, распредели Сила +1</dt><dd>очки уровня</dd>
+                  <dt>Система, директор …</dt><dd>поручение миру вне хода</dd>
+                </dl>
+              </section>
+            </div>
+          </div>
+        </aside>
+      </div>
+      <div class="thick" aria-hidden="true"><div class="a"></div><div class="s"></div><div class="b"></div></div>
+    </div>
+  </section>
 </main>
 
-<footer id="foot">
-  <div class="busy-bar" id="busyBar"><i></i></div>
-  <div class="composer">
-    <textarea id="inp" placeholder="Ваше действие…  («Система, статус»)" rows="1"></textarea>
-    <button class="pri icon" id="bSend" onclick="send()" title="Отправить" aria-label="Отправить">➤</button>
-  </div>
-  <div class="toolbar">
-    <button id="bCont" onclick="cont()" title="Мир действует без вашего хода">⏵<span class="lbl">Продолжить</span></button>
-    <button onclick="sysCmd()" title="Команда Системы">⚙<span class="lbl">Система</span></button>
-    <button onclick="regen()" title="Переписать последний ход">↻<span class="lbl">Ещё раз</span></button>
-  </div>
-</footer>
+<div class="backdrop" id="backdrop"></div>
+<div class="toasts" id="toasts"></div>
+<dialog id="dlg"><form method="dialog" class="dlg" id="dlgForm"></form></dialog>
 
-<script>
-const $=id=>document.getElementById(id), side=$('side'), chat=$('chat');
-let ws=null, scene=null, busy=false, segs={};
-const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-
-function view(v){
-  for(const x of ['vList','vNew']) $(x).classList.toggle('on', x===v);
-  const g=v==='vGame';
-  $('vGame').classList.toggle('on-game', g);
-  $('vGame').style.display=g?'flex':'none';
-  $('foot').classList.toggle('show', g);
-  $('bSide').style.display=g?'':'none';
-  $('bBack').style.display='';
-  if(!g){ closeSide(); $('subtitle').textContent='локальный рассказчик'; }
-  else if(window.innerWidth>=900){ side.classList.add('open'); }
-}
-
-function toggleSide(){
-  const open=side.classList.toggle('open');
-  $('backdrop').classList.toggle('show', open && window.innerWidth<900);
-}
-function closeSide(){
-  side.classList.remove('open');
-  $('backdrop').classList.remove('show');
-}
-
-async function loadList(){
-  const r=await (await fetch('api/scenes')).json();
-  $('list').innerHTML=r.length
-    ? r.map(s=>`<div class="card scene" onclick="openScene('${esc(s.id)}')">
-        <b>${esc(s.title)}</b>
-        <div class="meta">
-          <span class="badge ac">${esc(s.rule_mode)}</span>
-          <span class="badge">ход ${s.turn}</span>
-          <span class="badge">${esc(s.updated)}</span>
-        </div>
-      </div>`).join('')
-    : `<div class="empty"><div class="ico">◈</div><p>Сцен пока нет.<br>Создайте первую — и история начнётся.</p></div>`;
-}
-function showList(){
-  if(ws){ws.close();ws=null}
-  $('title').textContent='Narrator RPG';
-  view('vList'); loadList();
-}
-let sceneDraft=null;
-
-function showNew(){
-  view('vNew');
-  $('title').textContent='Новая сцена';
-  sceneDraft=null;
-  $('preview').style.display='none';
-  $('createForm').style.display='';
-  $('createPc').style.display='';
-  $('createNpcs').style.display='';
-  $('createActions').style.display='flex';
-  if(!$('npcs').children.length){
-    addNpc('Сильфа','Хозяйка таверны, торгует слухами');
-    addNpc('Борек','Хмурый наёмник у камина');
-  }
-}
-function addNpc(n='',d=''){
-  const el=document.createElement('div'); el.className='npc';
-  el.innerHTML=`<input class="nn" placeholder="Имя" value="${esc(n)}">
-    <label>Кратко (роль, черта)</label>
-    <textarea class="nd" rows="2" placeholder="Пара слов…">${esc(d)}</textarea>
-    <div class="row" style="margin-top:.35rem">
-      <button class="ghost icon" onclick="this.closest('.npc').remove()" title="Удалить">✕</button>
-    </div>`;
-  $('npcs').appendChild(el);
-}
-function collectBriefs(){
-  return [...document.querySelectorAll('.npc')].map(e=>({
-    name:e.querySelector('.nn').value.trim(),
-    brief:e.querySelector('.nd').value.trim()
-  })).filter(n=>n.name||n.brief);
-}
-function backToForm(){
-  sceneDraft=null;
-  $('preview').style.display='none';
-  $('createForm').style.display='';
-  $('createPc').style.display='';
-  $('createNpcs').style.display='';
-  $('createActions').style.display='flex';
-}
-function renderPreview(d){
-  const p=d.player||{};
-  const attrs=Object.entries(p.attrs||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ');
-  const abs=(p.abilities||[]).map(a=>esc(a.name)+' ('+(a.kind==='active'?'акт.':'пас.')+')').join(', ')||'—';
-  const inv=(p.inventory||[]).map(esc).join(', ')||'—';
-  let h=`<div class="hint" style="margin-bottom:.6rem">Проверьте и нажмите «Начать сцену». Атрибуты задал ИИ — править вручную не нужно.</div>`;
-  h+=`<b>${esc(d.title)}</b>`;
-  h+=`<div class="meta" style="margin:.35rem 0"><span class="badge ac">${esc($('nMode').value)}</span></div>`;
-  h+=`<div style="white-space:pre-wrap;font-size:.9rem;line-height:1.45;margin:.5rem 0 1rem;color:var(--tx)">${esc(d.setting)}</div>`;
-  h+=`<div class="card-title">Игрок: ${esc(p.name)}</div>`;
-  h+=`<div style="font-size:.9rem;margin-bottom:.35rem">${esc(p.description||'')}</div>`;
-  if(p.personality) h+=`<div class="hint">Характер: ${esc(p.personality)}</div>`;
-  h+=`<div class="attrs" style="margin:.4rem 0">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
-  h+=`<div class="hint">Способности: ${abs}</div>`;
-  h+=`<div class="hint" style="margin-bottom:.8rem">Набор: ${inv}</div>`;
-  h+=`<div class="card-title">NPC (${(d.npcs||[]).length})</div>`;
-  for(const n of (d.npcs||[])){
-    h+=`<div class="npc" style="margin:.4rem 0;padding:.55rem .65rem;border:1px solid var(--bd);border-radius:.5rem">`;
-    h+=`<b>${esc(n.name)}</b>`;
-    h+=`<div style="font-size:.88rem;margin-top:.25rem">${esc(n.description||'')}</div>`;
-    if(n.personality) h+=`<div class="hint">Характер: ${esc(n.personality)}</div>`;
-    if(n.secrets) h+=`<div class="hint">Тайна: ${esc(n.secrets)}</div>`;
-    h+=`</div>`;
-  }
-  if(d._stats) h+=`<div class="hint" style="margin-top:.6rem">Генерация: ${d._stats.wall_s||'?'}с · ${d._stats.predicted_n||'?'} ток.</div>`;
-  $('previewBody').innerHTML=h;
-}
-async function generateScene(){
-  const b=$('bGen'); b.disabled=true; b.textContent='Генерация…';
-  try{
-    const body={
-      title:$('nTitle').value.trim(),
-      premise:$('nPremise').value.trim(),
-      rule_mode:$('nMode').value,
-      player_name:$('pName').value.trim(),
-      player_brief:$('pBrief').value.trim(),
-      npcs:collectBriefs(),
-      npc_count:+($('nNpcCount').value||0)
-    };
-    const r=await fetch('api/scenes/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const j=await r.json();
-    if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
-    sceneDraft=j;
-    $('createForm').style.display='none';
-    $('createPc').style.display='none';
-    $('createNpcs').style.display='none';
-    $('createActions').style.display='none';
-    $('preview').style.display='';
-    renderPreview(j);
-  }catch(e){ alert('Генерация не удалась: '+e.message); }
-  finally{ b.disabled=false; b.textContent='Сгенерировать с ИИ'; }
-}
-async function confirmScene(){
-  if(!sceneDraft) return;
-  const b=$('bConfirm'); b.disabled=true; b.textContent='Создание…';
-  try{
-    const d=sceneDraft;
-    const body={
-      title:d.title, setting:d.setting, rule_mode:$('nMode').value,
-      player:{
-        name:d.player.name, description:d.player.description,
-        personality:d.player.personality||'', speech:d.player.speech||'',
-        kind:d.player.kind||'', attrs:d.player.attrs||{},
-        abilities:d.player.abilities||[],
-        inventory:d.player.inventory||[]
-      },
-      npcs:(d.npcs||[]).map(n=>({
-        name:n.name, description:n.description||'',
-        personality:n.personality||'', speech:n.speech||'',
-        secrets:n.secrets||'', kind:n.kind||'',
-        abilities:n.abilities||[], present:n.present!==false
-      }))
-    };
-    const r=await fetch('api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const j=await r.json();
-if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
-    sceneDraft=null; openScene(j.id);
-  }catch(e){ alert('Не удалось создать: '+e.message); }
-  finally{ b.disabled=false; b.textContent='Начать сцену'; }
-}
-
-
-function add(kind,text,who,id){
-  const d=document.createElement('div');
-  d.className='m '+kind; if(id) d.dataset.id=id;
-  setText(d,kind,text,who);
-  chat.appendChild(d);
-  chat.scrollTop=chat.scrollHeight;
-  return d;
-}
-function setText(d,kind,text,who){
-  d.className='m '+kind;
-  d.innerHTML=kind==='speech' ? `<b>${esc(who)}:</b> ${esc(text)}` : esc(text);
-}
-async function renderLog(id){
-  const s=await (await fetch('api/scenes/'+encodeURIComponent(id))).json();
-  scene=s;
-  $('title').textContent=s.title;
-  $('subtitle').textContent=s.rule_mode+' · ход '+s.turn;
-  chat.innerHTML=''; segs={};
-  let last=-1;
-  for(const e of s.log){
-    if(e.kind==='player'&&e.turn!==last){ addPlayer(e.text,e.turn); last=e.turn; }
-    else add(e.kind,e.text,e.who);
-  }
-  renderSide(s.state);
-  return s;
-}
-function addPlayer(text,turn){
-  const d=add('player',text);
-  if(turn){
-    const b=document.createElement('button');
-    b.className='rw'; b.textContent='↶'; b.title='Откатить к началу этого хода';
-    b.onclick=()=>{
-      if(!busy&&ws&&ws.readyState===1&&confirm('Откатить игру к началу хода '+turn+'?')){
-        ws.send(JSON.stringify({type:'rewind',turn})); setBusy(true);
-      }
-    };
-    d.prepend(b);
-  }
-  return d;
-}
-
-async function openScene(id){
-  view('vGame');
-  if(ws){ try{ws.close();}catch(e){} ws=null; }
-  setBusy(false);
-  await renderLog(id);
-  const proto=location.protocol==='https:'?'wss':'ws';
-  const url=`${proto}://${location.host}${location.pathname.replace(/\/$/,'')}/ws/${encodeURIComponent(id)}`;
-  ws=new WebSocket(url);
-  ws.onopen=()=>{ /* ready */ };
-  ws.onmessage=ev=>onMsg(JSON.parse(ev.data));
-  ws.onerror=()=>{ add('system','Нет связи с сервером (WebSocket). Обнови страницу.'); setBusy(false); };
-  ws.onclose=()=>{ ws=null; if(scene) setBusy(false); };
-}
-function onMsg(m){
-  if(m.type==='hello') return renderSide(m.state);
-  if(m.type==='player') return addPlayer(m.text,m.turn);
-  if(m.type==='continue') return addPlayer('⏵ Продолжить',m.turn);
-  if(m.type==='reload'){ renderLog(scene.id).then(()=>setBusy(false)); return; }
-  if(m.type==='memory'){ add('mem',m.text); if(m.state) renderSide(m.state); return; }
-  if(m.type==='chunk'){
-    let d=segs[m.id];
-    if(!d){ d=segs[m.id]=add(m.kind,'',m.who,m.id); d._t=''; }
-    d._t+=m.delta; setText(d,m.kind,d._t,m.who);
-    chat.scrollTop=chat.scrollHeight; return;
-  }
-  if(m.type==='retract'){ segs[m.id]?.remove(); delete segs[m.id]; return; }
-  if(m.type==='replace'){
-    const d=segs[m.id]; if(!d) return;
-    for(const s of m.segments){ const n=document.createElement('div'); setText(n,s.kind,s.text,s.who); d.before(n); }
-    d.remove(); delete segs[m.id]; return;
-  }
-  if(m.type==='segment') return add(m.kind,m.text,m.who);
-  if(m.type==='turn_end'){
-    renderSide(m.state);
-    if(m.state) $('subtitle').textContent=m.state.rule_mode+' · ход '+m.state.turn;
-    const s=m.stats;
-    if(s.llm_calls&&s.llm_calls.length){
-      const t=document.createElement('div'); t.className='turnstat';
-      t.textContent=`ход ${s.turn} · ${s.wall_s} с · ${s.llm_calls.length} вызов. · кэш ${s.cache_n} / чтение ${s.prompt_n}`;
-      chat.appendChild(t);
-    }
-    setBusy(false); return;
-  }
-  if(m.type==='error'){ add('system','Ошибка: '+m.text); setBusy(false); }
-}
-function setBusy(b){
-  busy=b;
-  $('bSend').disabled=b; $('bCont').disabled=b;
-  $('busyBar').classList.toggle('on', b);
-}
-function send(){
-  const t=$('inp').value.trim(); if(!t||busy) return;
-  if(!ws||ws.readyState!==1){
-    add('system','Соединение ещё не готово. Подожди секунду или открой сцену снова.');
-    return;
-  }
-  ws.send(JSON.stringify({type:'input',text:t}));
-  $('inp').value=''; autosize($('inp')); setBusy(true);
-}
-function regen(){ if(busy||!ws||ws.readyState!==1) return; ws.send(JSON.stringify({type:'regenerate'})); setBusy(true); }
-async function saveSettings(){
-  const b={length_mult:+$('sMult').value, max_speaks:+$('sMax').value||null};
-  await fetch('api/scenes/'+encodeURIComponent(scene.id)+'/settings',{
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b)
-  });
-  $('sMultV').textContent=b.length_mult;
-}
-function cont(){ if(busy||!ws||ws.readyState!==1) return; ws.send(JSON.stringify({type:'continue'})); setBusy(true); }
-function sysCmd(){
-  const c=prompt('Команда Системы','статус');
-  if(c){ $('inp').value='Система, '+c; send(); }
-}
-function autosize(el){
-  el.style.height='44px';
-  el.style.height=Math.min(120, Math.max(44, el.scrollHeight))+'px';
-}
-$('inp').addEventListener('keydown', e=>{
-  if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); }
-});
-$('inp').addEventListener('input', e=>autosize(e.target));
-
-function bar(c,m,col){
-  return `<div class="bar"><i style="width:${m?Math.round(100*c/m):0}%;background:${col}"></i></div>`;
-}
-function renderSide(st){
-  if(!st) return;
-  const p=st.characters[st.player_id];
-  const se=st.settings||{length_mult:1};
-  let h=`<div class="side-head"><strong>Персонаж</strong>
-    <button class="ghost icon" onclick="closeSide()" title="Закрыть" style="width:36px;height:36px;min-height:36px">✕</button></div>`;
-  h+=`<div class="hint">Режим: ${esc(st.rule_mode)} · ход ${st.turn}</div>`;
-  h+=`<div class="stat-block"><div class="stat-name">${esc(p.name)}${p.is_player?' · вы':''} · ур. ${p.level}</div>`;
-  if(p.kind) h+=`<div class="hint">${esc(p.kind)}</div>`;
-  h+=`<div class="stat-row"><span>❤️ HP</span><span>${p.hp}/${p.max_hp}</span></div>${bar(p.hp,p.max_hp,'var(--hp)')}`;
-  h+=`<div class="stat-row"><span>🔷 MP</span><span>${p.mp}/${p.max_mp}</span></div>${bar(p.mp,p.max_mp,'var(--mp)')}`;
-  h+=`<div class="stat-row"><span>✨ EXP</span><span>${p.exp}/${p.exp_next}</span></div>${bar(p.exp,p.exp_next,'var(--xp)')}</div>`;
-  h+=`<div class="attrs">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
-
-  const abs=p.abilities||[];
-  const act=abs.filter(a=>a.kind==='active'), pas=abs.filter(a=>a.kind!=='active');
-  h+=`<h3>Способности</h3>`;
-  if(!abs.length) h+=`<div class="list-plain">—</div>`;
-  else {
-    if(act.length){
-      h+=`<div class="hint" style="margin:.2rem 0">Активные</div><div class="list-plain">${act.map(a=>{
-        const ex=[a.cost&&('цена '+a.cost),a.cooldown&&('кд '+a.cooldown)].filter(Boolean).join(', ');
-        return '⚡ '+esc(a.name)+(ex?' <span class="hint">('+esc(ex)+')</span>':'')+(a.description?' — '+esc(a.description):'');
-      }).join('<br>')}</div>`;
-    }
-    if(pas.length){
-      h+=`<div class="hint" style="margin:.35rem 0 .2rem">Пассивные</div><div class="list-plain">${pas.map(a=>
-        '◇ '+esc(a.name)+(a.description?' — '+esc(a.description):'')
-      ).join('<br>')}</div>`;
-    }
-  }
-  h+=`<h3>Инвентарь</h3><div class="list-plain">${(p.inventory||[]).map(i=>{
-    const mark=i.equipped?' <span class="eq">[экип.]</span>':'';
-    return esc(i.name)+(i.qty>1?' ×'+i.qty:'')+mark;
-  }).join('<br>')||'—'}</div>`;
-
-  const present=st.present.filter(i=>i!==st.player_id);
-  h+=`<h3>Противники · в сцене</h3>`;
-  if(!present.length) h+=`<div class="list-plain">Никого рядом</div>`;
-  else {
-    h+=`<div class="hint" style="margin-bottom:.35rem">${present.length} рядом · статы видны после осмотра</div>`;
-    h+= present.map(i=>{
-      const c=st.characters[i]||{};
-      const known=c.reveal||{};
-      const kind = known.kind ? (c.kind||'неизвестно') : 'неизвестно';
-      let block=`<div class="combat-box" style="margin-bottom:.4rem;background:rgba(120,140,160,.06);border-color:var(--line)">`;
-      block+=`<div><b>${esc(c.name||'?')}</b> · <span class="hint">${esc(kind)}</span></div>`;
-      if(known.attrs && c.attrs && Object.keys(c.attrs).length){
-        block+=`<div class="attrs" style="margin-top:.3rem">${Object.entries(c.attrs).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
-        if(c.hp!=null) block+=`<div class="hint">HP ${c.hp}/${c.max_hp}</div>`;
-      } else if(st.combat&&st.combat.active&&c.hp!=null){
-        block+=`<div class="hint">HP ${c.hp}/${c.max_hp} · характеристики скрыты</div>`;
-      } else {
-        block+=`<div class="hint">характеристики: неизвестно</div>`;
-      }
-      if(known.abilities){
-        const al=c.abilities||[];
-        block+=`<div class="hint" style="margin-top:.25rem">способности: ${al.length?al.map(a=>esc(a.name)).join(', '):'не видно'}</div>`;
-      } else {
-        block+=`<div class="hint">способности: неизвестно</div>`;
-      }
-      block+=`</div>`;
-      return block;
-    }).join('');
-  }
-
-  if(st.combat&&st.combat.active){
-    h+=`<h3>Бой · раунд ${st.combat.round}</h3><div class="combat-box">`;
-    h+=(st.combat.order||[]).map((o,i)=>{
-      const c=st.characters[o.id]||{};
-      const cur=i===st.combat.current?' cur':'';
-      const hp=c.hp!=null?` · HP ${c.hp}/${c.max_hp}`:'';
-      return `<div class="${cur.trim()}">${i===st.combat.current?'→ ':''}${esc(c.name||o.id)}${hp}</div>`;
-    }).join('');
-    h+=`</div>`;
-  }
-  const cond=p.conditions||[];
-  if(cond.length){
-    h+=`<h3>Состояния</h3><div class="list-plain">${cond.map(x=>esc(x.name)+` (${x.turns_left})`).join('<br>')}</div>`;
-  }
-  h+=`<h3>Память</h3><div class="hint">сводок ${st.summaries||0} · фактов ${st.facts||0}<br>архив до хода ${st.archived_turn||0}</div>`;
-  const dlog=st.director_log||[];
-  h+=`<h3>Директор</h3>
-    <p class="hint">Правит карточки и сцену (инвентарь по роли, описание, способности…).</p>
-    <textarea id="dirInp" rows="2" placeholder="напр. дай Сильфе лук и колчан" style="margin-bottom:.35rem"></textarea>
-    <div class="row" style="gap:.35rem;margin-bottom:.4rem">
-      <button class="pri" style="flex:1" onclick="sendDirector()" ${busy?'disabled':''}>Поручить</button>
-      <button class="ghost" style="flex:1" onclick="sendDirectorAudit()" title="Проверить карточки">Аудит</button>
-    </div>`;
-  if(dlog.length){
-    h+=`<div class="list-plain hint">${dlog.slice().reverse().map(x=>esc(x)).join('<br>· ')}</div>`;
-  }
-  h+=`<h3>Настройки</h3>
-    <label>Длина ходов × <span id="sMultV">${se.length_mult}</span></label>
-    <input id="sMult" type="range" min="0.5" max="2" step="0.25" value="${se.length_mult}" onchange="saveSettings()">
-    <label>Макс. реплик NPC за ход</label>
-    <input id="sMax" type="number" min="1" max="10" placeholder="авто" value="${se.max_speaks||''}" onchange="saveSettings()">
-    <p class="hint" style="margin-top:.6rem">Осмотр: «Система, осмотри Имя» · Директор: «Система, директор …»</p>`;
-  side.innerHTML=h;
-}
-
-function sendDirector(){
-  const t=($('dirInp')&&$('dirInp').value||'').trim();
-  if(!t){ alert('Напишите поручение директору'); return; }
-  $('inp').value='Система, директор '+t; send();
-}
-function sendDirectorAudit(){
-  $('inp').value='Система, проверь карточки'; send();
-}
-
-view('vList'); loadList();
-</script>
+<script type="module" src="assets/app.js"></script>
 </body>
 </html>

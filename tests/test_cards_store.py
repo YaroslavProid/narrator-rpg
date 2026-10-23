@@ -41,3 +41,15 @@ def test_api_create_scene():
         g = cl.get(f"/api/scenes/{r.json()['id']}").json()
         assert g["rule_mode"] == "система" and len(g["state"]["present"]) == 3
         assert cl.post("/api/scenes", json={"title": "Б", "setting": "", "rule_mode": "x", "player": {"name": "Я"}}).status_code == 400
+
+
+def test_api_settings_partial_and_delete():
+    from fastapi.testclient import TestClient
+    from app.server import app
+    with TestClient(app) as cl:
+        sid = cl.post("/api/scenes", json={"title": "В", "setting": "мир", "player": {"name": "Ярен"}}).json()["id"]
+        assert cl.post(f"/api/scenes/{sid}/settings", json={"length_mult": 1.5}).json()["length_mult"] == 1.5
+        r = cl.post(f"/api/scenes/{sid}/settings", json={"max_speaks": 2, "inactive_leave": 0}).json()
+        assert r == {"length_mult": 1.5, "max_speaks": 2, "inactive_leave": 0}
+        assert cl.delete(f"/api/scenes/{sid}").json()["ok"]
+        assert cl.get(f"/api/scenes/{sid}").status_code == 404

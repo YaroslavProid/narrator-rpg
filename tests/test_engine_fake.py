@@ -85,3 +85,46 @@ def test_introduce_and_witness():
     knows = T(None).knows(s, m)
     assert not any("Дверь распахивается" in k for k in knows)   # happened before she entered
     assert "Карточка:" in llm.prompts[2]                          # not in fixed block -> inline card
+
+
+class BrokenLLM(FakeLLM):
+    async def complete(self, *a, **kw):
+        if not self.outs:
+            raise RuntimeError("llama-server недоступен")
+        return await super().complete(*a, **kw)
+
+
+def test_failed_turn_rolls_back():
+    s, llm, ev, st = run([("<narrate>Первый ход.</narrate><end", "/>")], "Иду к стойке")
+    turns, log, snaps = len(s.turns), len(s.log), len(s.snapshots)
+    eng = TurnEngine(BrokenLLM([])); ev2 = []
+
+    async def emit(m): ev2.append(m)
+    try:
+        asyncio.run(eng.handle(s, "Беру ключ", emit)); assert False, "must raise"
+    except RuntimeError:
+        pass
+    assert s.turn == 1 and len(s.turns) == turns and len(s.log) == log and len(s.snapshots) == snaps
+    assert ev2[-1]["type"] == "reload" and ev2[-1]["scene"]["turn"] == 1
+
+
+def test_failed_regenerate_keeps_old_turn():
+    s, llm, ev, st = run([("<narrate>Первый ход.</narrate><end", "/>")], "Иду к стойке")
+    eng = TurnEngine(BrokenLLM([])); ev2 = []
+
+    async def emit(m): ev2.append(m)
+    try:
+        asyncio.run(eng.regenerate(s, emit)); assert False, "must raise"
+    except RuntimeError:
+        pass
+    assert s.turn == 1 and "Первый ход" in eng.prompt(s) and s.regen == 0
+    assert ev2[0]["type"] == "reload" and ev2[0]["busy"] and ev2[-1]["busy"] is False
+
+
+def test_snapshots_capped(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "SNAPSHOTS", 2)
+    s = None
+    for i in range(4):
+        s, *_ = run([(f"<narrate>Ход {i}.</narrate><end", "/>")], "Жду", s)
+    assert len(s.snapshots) == 2 and TurnEngine(None).payload(s)["rewind_from"] == 3

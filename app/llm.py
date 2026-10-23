@@ -10,14 +10,24 @@ class LLM:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10))
 
     async def wait_idle(self, max_wait: float = 900):
-        waited = 0.0
+        """Wait until no slot is processing. Fails fast when llama-server is unreachable, and skips the
+        check when /slots is disabled (--no-slots) instead of silently spinning for max_wait."""
+        waited = 0.0; conn_errors = 0
         while waited < max_wait:
             try:
                 r = await self.client.get(self.url + "/slots")
-                if not any(s.get("is_processing") for s in r.json()):
+            except httpx.TransportError as e:
+                conn_errors += 1
+                if conn_errors >= 3:
+                    raise RuntimeError(f"llama-server недоступен по {self.url} ({type(e).__name__}). "
+                                       f"Запущен ли он? Проверь LLM_URL.") from e
+            else:
+                conn_errors = 0
+                slots = r.json() if r.status_code == 200 else None
+                if not isinstance(slots, list):
                     return waited
-            except Exception:
-                pass
+                if not any(isinstance(s, dict) and s.get("is_processing") for s in slots):
+                    return waited
             await asyncio.sleep(2); waited += 2
         raise RuntimeError("llama-server busy too long")
 
@@ -31,7 +41,7 @@ class LLM:
         await self.wait_idle()
         body = {"prompt": prompt, "n_predict": n_predict, "stream": True, "cache_prompt": True,
                 "id_slot": 0, "temperature": config.TEMPERATURE if temperature is None else temperature,
-                "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.05, "seed": seed,
+                "top_p": config.TOP_P, "min_p": config.MIN_P, "repeat_penalty": config.REPEAT_PENALTY, "seed": seed,
                 "stop": stop or [], **extra}
         t0 = time.time(); out = []; timings = {}; stop_word = ""; stop_type = ""
         async with self.client.stream("POST", self.url + "/completion", json=body) as r:
@@ -39,7 +49,12 @@ class LLM:
             async for line in r.aiter_lines():
                 if not line.startswith("data:"):
                     continue
-                d = json.loads(line[5:].strip())
+                try:
+                    d = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if "error" in d and not d.get("content"):
+                    raise RuntimeError(f"llama-server: {d['error']}")
                 c = d.get("content", "")
                 if c:
                     out.append(c)

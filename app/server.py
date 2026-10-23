@@ -1,8 +1,10 @@
 """FastAPI app: REST for scenes/cards, WebSocket for turns."""
 import argparse, asyncio, json
 from contextlib import asynccontextmanager
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from . import config, store
 from .cards import parse_card
@@ -21,11 +23,25 @@ async def lifespan(app):
     elif config.MEMORY:
         print("WARNING: embedding model missing in", config.EMBED_DIR, "- vector memory disabled")
     state["llm"] = LLM(); state["engine"] = TurnEngine(state["llm"], mem); state["scenes"] = {}
+    state["mem"] = mem; state["subs"] = {}; state["turn_running"] = False
     yield
     await state["llm"].close()
 
 app = FastAPI(title="Narrator RPG", lifespan=lifespan)
 WEB = config.ROOT / "web"
+(WEB / "assets").mkdir(exist_ok=True)
+
+
+@app.middleware("http")
+async def revalidate_ui(request, call_next):
+    """UI files change with the code; make the browser revalidate them instead of using a stale copy."""
+    resp = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/assets/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+app.mount("/assets", StaticFiles(directory=WEB / "assets"), name="assets")
 
 
 def get_scene(sid):
@@ -104,6 +120,19 @@ async def scenes():
     return store.list_scenes()
 
 
+@app.get("/api/status")
+async def status():
+    """Is llama-server reachable? Shown as a dot in the UI header."""
+    llm = "down"
+    try:
+        r = await state["llm"].client.get(config.LLM_URL.rstrip("/") + "/health", timeout=3)
+        llm = "ok" if r.status_code == 200 else ("loading" if r.status_code == 503 else "error")
+    except httpx.HTTPError:
+        pass
+    return {"llm": llm, "llm_url": config.LLM_URL, "memory": state["mem"] is not None,
+            "busy": state["turn_running"]}
+
+
 @app.post("/api/scenes")
 async def new_scene(body: SceneIn):
     if body.rule_mode not in ("d20", "система"):
@@ -153,21 +182,41 @@ async def generate_scene_draft(body: GenerateIn):
 
 @app.get("/api/scenes/{sid}")
 async def scene_get(sid: str):
-    sc = get_scene(sid)
-    return {"id": sc.id, "title": sc.title, "setting": sc.setting, "rule_mode": sc.rule_mode,
-            "log": [e.model_dump() for e in sc.log], "state": state["engine"].state(sc), "stats": sc.stats[-20:]}
+    return state["engine"].payload(get_scene(sid))
+
+
+@app.delete("/api/scenes/{sid}")
+async def scene_delete(sid: str):
+    get_scene(sid)
+    eng: TurnEngine = state["engine"]
+    async with eng.lock:
+        state["scenes"].pop(sid, None)
+        store.delete_scene(sid)
+        if state["mem"]:
+            await asyncio.to_thread(state["mem"].drop, sid)
+    for w in list(state["subs"].pop(sid, ())):
+        try: await w.close()
+        except Exception: pass
+    return {"ok": True}
 
 
 class SettingsIn(BaseModel):
-    length_mult: float = 1.0
+    """Only the fields that are sent are changed; 0 / null = automatic."""
+    length_mult: float | None = None
     max_speaks: int | None = None
+    inactive_leave: int | None = None
 
 
 @app.post("/api/scenes/{sid}/settings")
 async def scene_settings(sid: str, body: SettingsIn):
     sc = get_scene(sid)
-    sc.settings.length_mult = max(0.5, min(2.0, body.length_mult))
-    sc.settings.max_speaks = body.max_speaks if body.max_speaks and body.max_speaks > 0 else None
+    sent = body.model_fields_set
+    if "length_mult" in sent and body.length_mult is not None:
+        sc.settings.length_mult = max(0.5, min(2.0, body.length_mult))
+    if "max_speaks" in sent:
+        sc.settings.max_speaks = body.max_speaks if body.max_speaks and body.max_speaks > 0 else None
+    if "inactive_leave" in sent:
+        sc.settings.inactive_leave = None if body.inactive_leave is None else max(0, min(50, body.inactive_leave))
     store.save_scene(sc)
     return sc.settings.model_dump()
 
@@ -188,31 +237,52 @@ async def ws(websocket: WebSocket, sid: str):
     except HTTPException:
         await websocket.send_json({"type": "error", "text": "сцена не найдена"}); await websocket.close(); return
     eng: TurnEngine = state["engine"]
+    subs = state["subs"].setdefault(sid, set())
+    subs.add(websocket)
 
     async def emit(m):
-        await websocket.send_text(json.dumps(m, ensure_ascii=False))
+        """Broadcast to every open tab of this scene. A dropped socket (phone screen locked, tab closed)
+        must not abort the running turn: it keeps going, gets saved, and the client reloads on reconnect."""
+        data = json.dumps(m, ensure_ascii=False)
+        for w in list(state["subs"].get(sid, ())):
+            try:
+                await w.send_text(data)
+            except Exception:
+                state["subs"].get(sid, set()).discard(w)
 
-    await emit({"type": "hello", "state": eng.state(sc)})
+    await websocket.send_text(json.dumps({"type": "hello", "state": eng.state(sc), "busy": state["turn_running"]},
+                                         ensure_ascii=False))
     if sc.turns and not eng.lock.locked():
         asyncio.create_task(eng.warm(sc))  # re-warm prompt cache after load
     try:
         while True:
-            msg = json.loads(await websocket.receive_text())
+            raw = await websocket.receive_text()
             try:
+                msg = json.loads(raw)
                 t = msg.get("type")
-                if t == "input" and (msg.get("text") or "").strip():
-                    await eng.handle(sc, msg["text"].strip(), emit)
-                elif t == "continue":
-                    await eng.handle(sc, None, emit)
-                elif t == "regenerate":
-                    if await eng.regenerate(sc, emit) is None:
-                        await emit({"type": "error", "text": "нечего переписывать"})
-                elif t == "rewind":
-                    ok = await eng.rewind_locked(sc, int(msg.get("turn", 0)))
-                    await emit({"type": "reload"} if ok else {"type": "error", "text": "нет точки отката"})
+                if t not in ("input", "continue", "regenerate", "rewind"):
+                    continue  # ping / unknown
+                if state["turn_running"]:  # e.g. a second tab; background archiving does not count
+                    await websocket.send_text(json.dumps({"type": "error", "text": "рассказчик ещё занят прошлым ходом"},
+                                                         ensure_ascii=False))
                     continue
-                else:
-                    continue
+                state["turn_running"] = True
+                try:
+                    if t == "input":
+                        if (msg.get("text") or "").strip():
+                            await eng.handle(sc, msg["text"].strip(), emit)
+                    elif t == "continue":
+                        await eng.handle(sc, None, emit)
+                    elif t == "regenerate":
+                        if await eng.regenerate(sc, emit) is None:
+                            await emit({"type": "error", "text": "нечего переписывать"})
+                    elif t == "rewind":
+                        ok = await eng.rewind_locked(sc, int(msg.get("turn", 0)))
+                        await emit({"type": "reload", "scene": eng.payload(sc), "busy": False} if ok
+                                   else {"type": "error", "text": "нет точки отката для этого хода"})
+                        continue
+                finally:
+                    state["turn_running"] = False
                 asyncio.create_task(eng.background(sc, emit))
             except WebSocketDisconnect:
                 raise
@@ -220,6 +290,8 @@ async def ws(websocket: WebSocket, sid: str):
                 await emit({"type": "error", "text": f"{type(e).__name__}: {e}"})
     except WebSocketDisconnect:
         return
+    finally:
+        state["subs"].get(sid, set()).discard(websocket)
 
 
 def main():

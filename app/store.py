@@ -50,3 +50,9 @@ def new_scene_id(title: str) -> str:
 def save_card(c: Character):
     d = config.DATA / "characters"; d.mkdir(parents=True, exist_ok=True)
     (d / f"{slug(c.name)}.json").write_text(c.model_dump_json(indent=1), encoding="utf-8")
+
+
+def delete_scene(scene_id: str):
+    if not re.fullmatch(r"[\w\-]+", scene_id):
+        raise FileNotFoundError(scene_id)
+    (scenes_dir() / f"{scene_id}.json").unlink(missing_ok=True)

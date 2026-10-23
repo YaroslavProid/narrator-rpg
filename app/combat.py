@@ -15,8 +15,8 @@ def parse_dice(expr: str) -> tuple[int, int, int]:
     """'1d8+2' → (n, sides, bonus). Bare int → (0, 0, int)."""
     e = (expr or "").strip().lower().replace(" ", "")
     m = re.fullmatch(r"(\d+)d(\d+)([+-]\d+)?", e)
-    if m:
-        return int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    if m and int(m.group(2)) > 0:
+        return min(20, int(m.group(1))), int(m.group(2)), int(m.group(3) or 0)
     try:
         return 0, 0, int(e)
     except ValueError:

@@ -115,6 +115,13 @@ class TurnEngine:
                 "director_log": list(getattr(scene, "director_log", []) or [])[-8:],
                 "characters": chars}
 
+    def payload(self, scene):
+        """Full scene view for the client (initial load and `reload`)."""
+        return {"id": scene.id, "title": scene.title, "setting": scene.setting, "rule_mode": scene.rule_mode,
+                "turn": scene.turn, "log": [e.model_dump() for e in scene.log], "state": self.state(scene),
+                "stats": scene.stats[-20:],
+                "rewind_from": (scene.snapshots[0]["turn"] + 1) if scene.snapshots else None}
+
     def prompt(self, scene, open_model=None, extra=None):
         pre = []
         mb = MEM.memory_block(scene)
@@ -228,11 +235,26 @@ class TurnEngine:
             self.bg_cancel.clear()
             if not scene.snapshots:
                 return None
+            backup = scene.model_copy(deep=True)
             s = scene.snapshots[-1]
             self.rewind(scene, s["turn"] + 1)
             scene.regen += 1
-            await emit({"type": "reload"})
-            return await self._turn(scene, s["input"], emit)
+            await emit({"type": "reload", "scene": self.payload(scene), "busy": True})
+            try:
+                return await self._turn(scene, s["input"], emit, rollback=False)
+            except Exception:
+                # keep the old version of the turn instead of losing it
+                for f in type(scene).model_fields:
+                    setattr(scene, f, getattr(backup, f))
+                store.save_scene(scene)
+                await self._emit_reload(scene, emit)
+                raise
+
+    async def _emit_reload(self, scene, emit):
+        try:
+            await emit({"type": "reload", "scene": self.payload(scene), "busy": False})
+        except Exception:
+            pass
 
     # ---------- memory ----------
     async def retrieve(self, scene, query: str, witness: str, k: int, recent: str = "") -> list[dict]:
@@ -296,9 +318,6 @@ class TurnEngine:
         tt = await self.turn_tokens(scene)
         blocks = self.plan_blocks(tt, n_blocks)
         if not blocks:
-            return None
-        # force a single undersized block only when forced and nothing else fits
-        if forced and not blocks:
             return None
         anchors = {}
         for e in scene.log:
@@ -498,9 +517,23 @@ class TurnEngine:
         combat = bool(last and "бой" in " ".join(last.get("tier_reasons", [])))
         return introduced, (last or {}).get("tier"), combat
 
-    async def _turn(self, scene: Scene, text: str | None, emit) -> dict:
+    async def _turn(self, scene: Scene, text: str | None, emit, rollback: bool = True) -> dict:
+        """Run one turn; on any failure (LLM down, timeout…) restore the pre-turn snapshot so the
+        in-memory scene never keeps a half-finished turn (dangling user message, bumped turn counter)."""
+        snap = self.snapshot(scene, text)
+        scene.snapshots.append(snap)
+        if config.SNAPSHOTS > 0 and len(scene.snapshots) > config.SNAPSHOTS:
+            del scene.snapshots[: len(scene.snapshots) - config.SNAPSHOTS]
+        try:
+            return await self._turn_body(scene, text, emit)
+        except Exception:
+            if rollback:
+                self.rewind(scene, snap["turn"] + 1)
+                await self._emit_reload(scene, emit)
+            raise
+
+    async def _turn_body(self, scene: Scene, text: str | None, emit) -> dict:
         t0 = time.time()
-        scene.snapshots.append(self.snapshot(scene, text))
         introduced, last_tier, combat = self._signals(scene)
         scene.turn += 1; scene.turn_exp = 0
         calls = []
@@ -547,7 +580,8 @@ class TurnEngine:
             if tag is None or tag.name == "end":
                 break
             if tag.name == "scale":
-                b2 = turn_budget(text, npcs, introduced, last_tier, combat, st_.length_mult, st_.max_speaks,
+                b2 = turn_budget(text, npcs, introduced, last_tier, combat or scene.combat.active,
+                                 st_.length_mult, st_.max_speaks,
                                  scale_override=tag.attrs.get("level", "").lower())
                 budget = b2
                 steps -= 1  # declaring the scale is free
