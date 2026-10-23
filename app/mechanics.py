@@ -734,6 +734,14 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
     if any(k in r for k in ("провер", "аудит", "audit", "карточки")) and any(
             k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
         return "director_audit", r
+    if re.fullmatch(r"(пути|пути магии|магия|школы магии|магические пути|paths)", r): return "paths", r
+    if "?" in rest or re.match(r"(как|что|почему|зачем|сколько|можно|могу|какие|какой|какая|где|когда|чем|кто|"
+                               r"расскажи|объясни|подскажи|хочу|нужно|требуется)\b", r):
+        return "ask", r          # a question, even about opening a path, is for the System agent
+    if re.search(r"\b(пут[ьиюё]|ступен\w*)\b", r) and re.search(r"\b(откр\w*|изуч\w*|освой\w*|прокач\w*)\b", r):
+        return "unlock_path", r
+    if re.search(r"маги|\bпут[ьиюё]\b|школ|заклин|стихи", r):
+        return "ask", r
     if any(k in r for k in ("отпусти", "исключи", "прогони", "dismiss")): return "dismiss", r
     if any(k in r for k in ("отряд", "групп", "party", "спутник")): return "party", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
@@ -749,10 +757,12 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
     if any(k in r for k in ("экип", "надень", "надет", "equip", "вооруж")): return "equip", r
     if any(k in r for k in ("сними", "снят", "unequip")): return "unequip", r
     if any(k in r for k in ("используй", "выпей", "примени", "use")): return "use", r
-    if any(k in r for k in ("дай", "отдай", "передай", "give")): return "give", r
+    if re.search(r"(?<![а-яё])(дай|отдай|передай)(?![а-яё])|\bgive\b", r): return "give", r   # not «выдай», «продай»
     if any(k in r for k in ("бой", "combat", "иниц")): return "combat", r
     if any(k in r for k in ("состоян", "эффект", "condition", "бафф", "дебафф")): return "conditions", r
     if any(k in r for k in ("распредел", "вклад", "очк", "assign")): return "assign", r
+    if r and not re.fullmatch(r"(помощь|help|справка|команды)", r):
+        return "ask", r          # anything the parser does not know is a question for the System agent
     return "help", r
 
 
@@ -780,8 +790,15 @@ def status_text(c: Character) -> str:
 def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
     from . import combat as C
     p = scene.player
-    if cmd in ("status", "abilities", "lock_ability", "unlock_ability", "take_ability", "assign", "conditions"):
+    if cmd in ("status", "abilities", "lock_ability", "unlock_ability", "take_ability", "assign", "conditions", "unlock_path"):
         p, rest = pick_member(scene, rest)   # progression of companions is the hero's call too
+    if cmd == "unlock_path":
+        from . import magic as G
+        if not scene.paths:
+            return "⟦ СИСТЕМА ⟧ Пути магии этого мира ещё не открыты Системе. Спросите: «Система, пути магии»."
+        name = re.sub(r"откр\w*|изуч\w*|освой\w*|прокач\w*|следующ\w*|ступен\w*|\bпут[ьиюё]\b|\bдля\b", "", rest, flags=re.I).strip(" .,;:—-")
+        ok, msg = G.unlock_tier(scene, p, name)
+        return "### ⟦ СИСТЕМА · ПУТЬ ⟧\n" + ("" if ok else "Отказано. ") + msg
     if cmd == "party":
         lines = [f"### ⟦ СИСТЕМА · ОТРЯД {len(party_ids(scene))}/{config.PARTY_MAX} ⟧"]
         for cid in party_ids(scene):

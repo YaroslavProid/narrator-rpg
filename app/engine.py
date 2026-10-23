@@ -119,7 +119,17 @@ class TurnEngine:
                     for x in M.ability_offers(scene, 3)
                 ] if scene.player.ability_points > 0 else [],
                 "party": M.party_ids(scene), "party_max": config.PARTY_MAX, "party_info": self.party_info(scene),
+                "magic": self.magic_info(scene),
                 "characters": chars}
+
+    def magic_info(self, scene):
+        """This world's paths and, per party member, what each next tier needs (computed by code)."""
+        if not scene.paths:
+            return None
+        from . import magic as G
+        return {"paths": [{"id": p.id, "name": p.name, "attr": p.attr, "description": p.description} for p in scene.paths],
+                "status": {cid: [G.tier_status(scene, scene.characters[cid], p) | {"id": p.id, "have": scene.characters[cid].paths.get(p.id, 0)}
+                                 for p in scene.paths] for cid in M.party_ids(scene)}}
 
     def party_info(self, scene):
         """Per companion: EXP catch-up multiplier, open ability offers, whether the AI is still filling the card."""
@@ -160,6 +170,8 @@ class TurnEngine:
                 cmd = M.parse_system_command(text)
                 if cmd:
                     await emit({"type": "player", "text": text})
+                    if cmd[0] in ("ask", "paths"):
+                        return await self._system_agent(scene, text, cmd[0], emit)
                     if cmd[0] in ("director", "director_audit"):
                         return await self._director(scene, cmd[1], emit, audit=(cmd[0] == "director_audit"))
                     out = M.run_system_command(scene, *cmd)
@@ -251,6 +263,29 @@ class TurnEngine:
                     except Exception:
                         pass
 
+    async def _system_agent(self, scene, text, kind, emit) -> dict:
+        """'Система, …' questions (and the paths overview) — LLM answers, code checks any action. No story turn."""
+        from . import magic as G, system_agent as SA
+        t0 = time.time(); calls = []
+        try:
+            if kind == "paths":
+                calls = await G.ensure_paths(self.llm, scene, seed=self.seed(scene, 61))
+                who, _ = M.pick_member(scene, text)
+                out = G.paths_overview(scene, who)
+            else:
+                res = await SA.ask(self.llm, scene, re.sub(r"^\W*(система|system)\W*", "", text, flags=re.I),
+                                   seed=self.seed(scene, 63))
+                out, calls = res["text"], res["calls"]
+        except Exception as e:
+            out = f"⟦ СИСТЕМА ⟧ Не удалось ответить: {type(e).__name__}: {e}"
+        await self.sys_msg(emit, scene, out)
+        scene.log.append(Event(turn=scene.turn, kind="system", who="Система", text=out, witnesses=[scene.player_id]))
+        store.save_scene(scene)
+        st = {"turn": scene.turn, "command": kind, "llm_calls": calls, "wall_s": round(time.time() - t0, 2),
+              "prompt_n": sum(c.get("prompt_n") or 0 for c in calls), "cache_n": sum(c.get("cache_n") or 0 for c in calls)}
+        await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
+        return st
+
     async def warm(self, scene):
         async with self.lock:
             try:
@@ -266,7 +301,7 @@ class TurnEngine:
                 "facts": [f.model_dump() for f in scene.facts], "archived_upto": scene.archived_upto,
                 "archived_turn": scene.archived_turn, "injected": list(scene.memory_injected),
                 "stats_len": len(scene.stats), "combat": scene.combat.model_dump(),
-                "party": list(scene.party), "pending_fill": list(scene.pending_fill)}
+                "party": list(scene.party), "pending_fill": list(scene.pending_fill), "flags": dict(scene.flags)}
 
     def rewind(self, scene: Scene, to_turn: int) -> bool:
         """Undo every turn >= to_turn (restore the snapshot taken when turn `to_turn` started)."""
@@ -283,6 +318,7 @@ class TurnEngine:
         scene.memory_injected = s["injected"]; scene.stats = scene.stats[:s["stats_len"]]
         scene.combat = Combat.model_validate(s.get("combat") or {})
         scene.party = list(s.get("party") or []); scene.pending_fill = list(s.get("pending_fill") or [])
+        scene.flags = dict(s.get("flags") or {})
         scene.turn = s["turn"]; scene.snapshots = scene.snapshots[:idx]
         if self.mem:
             try: self.mem.delete_from(scene.id, to_turn)
@@ -851,6 +887,14 @@ class TurnEngine:
             if count == 1:
                 return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}."
             return f"В сцену входят: {', '.join(c.name for c in made)}. Обращайся к каждому по имени."
+        if tag.name == "fulfill":
+            from . import magic as G
+            ok, msg = G.fulfill(scene, a.get("what", ""))
+            if ok:
+                await self.sys_msg(emit, scene, "⟦ СИСТЕМА ⟧ " + msg)
+                transcript.append({"kind": "system", "text": msg})
+                self.log(scene, "system", "⟦ СИСТЕМА ⟧ " + msg, "Система")
+            return msg
         if tag.name in ("join", "part"):
             c = M.resolve_character(scene, a.get("who", ""))
             if not c:

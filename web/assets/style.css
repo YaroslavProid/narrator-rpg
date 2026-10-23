@@ -457,6 +457,9 @@ body.busy .send .wax { animation: spin 5s linear infinite; }
 .party-sw .dotp { position: absolute; top: 2px; right: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--rubric); box-shadow: 0 0 0 2px var(--paper); }
 .party-sw > .sub { margin-left: auto; align-self: center; }
 .abil.offer { padding: 8px 10px; border: 1px dashed var(--ink-faint); }
+.abil.path { padding: 8px 10px; border: 1px solid var(--ink-faint); }
+.abil.path.ready { border-color: var(--rubric); background: var(--hover); }
+.abil.path .miss { font-style: italic; color: var(--ink-soft); font-size: 15px; }
 .near .bd { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .near .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .near .note { font: 400 13px/1 var(--f-sc); letter-spacing: .1em; color: var(--ink-soft); }

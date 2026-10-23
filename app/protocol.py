@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 TAG_RE = re.compile(r"<\s*(\w+)((?:\s+[\w-]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s/>]+))*)\s*/?\s*>?\s*$", re.S)
 ATTR_RE = re.compile(r"([\w-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s/>]+))")
 ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end", "scale", "attack", "combat", "condition",
-               "reveal", "join", "part"}
+               "reveal", "join", "part", "fulfill"}
 REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": [], "scale": ["level"], "attack": ["target"], "combat": ["action"], "condition": ["who", "name"],
-            "reveal": ["who"], "join": ["who"], "part": ["who"]}
+            "reveal": ["who"], "join": ["who"], "part": ["who"], "fulfill": ["what"]}
 
 
 class ParseError(Exception):

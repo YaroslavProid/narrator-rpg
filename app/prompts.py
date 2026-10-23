@@ -28,6 +28,17 @@ def card_text(c: Character, full: bool = True) -> str:
     return s
 
 
+def magic_block(scene: Scene) -> str:
+    if not scene.paths:
+        return ""
+    from . import magic as G
+    paths = "; ".join(f"{p.name} ({p.attr})" for p in scene.paths)
+    conds = "\n".join(f"- {x}" for x in G.open_story_conditions(scene, 12))
+    return ("\n\nПути магии этого мира: " + paths + ". Ступени открывает Система, не ты. "
+            "Сюжетные условия ступеней — когда такое событие действительно произошло в истории (герой нашёл наставника, "
+            "прочёл книгу, прошёл обряд), поставь <fulfill what=\"условие\"/>. Не выполняй их за игрока и не дари даром:\n" + conds)
+
+
 def build_system(scene: Scene) -> str:
     p = scene.player
     present = [scene.characters[i] for i in scene.present if i != p.id]
@@ -75,7 +86,7 @@ def build_system(scene: Scene) -> str:
 - Если у персонажа в карточке есть оружие — указывай его в weapon; не оставляй союзника без действия в свой ход боя.
 
 # Механика
-{RULES_D20 if scene.rule_mode == 'd20' else RULES_SYS}
+{RULES_D20 if scene.rule_mode == 'd20' else RULES_SYS}{magic_block(scene)}
 Атрибуты для <roll skill="…"> (только из списка): {attrs}.
 «Навыки» персонажа — это способности (огненный шар, ночное зрение), а не проверки; проверки всегда по атрибутам.
 Характеристики мягкие: разница в 1–2 пункта почти не решает исход; колоссальный разрыв (5+) доминирует. Не трактуй статы как абсолют.

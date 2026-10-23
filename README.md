@@ -37,6 +37,8 @@ Embedding model (CPU, ~120 MB, not in git):
     app/budget.py     dynamic per-turn budget: tier камерный/обычный/крупный from active NPCs, input type, novelty, length
     app/memory.py     e5-small ONNX embedder, Chroma store, hybrid retrieval, multi-block archiver
     app/combat.py     initiative, attack/AC/damage, conditions
+    app/magic.py      magic paths: AI invents them per world, code balances tiers (level/attr/points/story), <fulfill/>
+    app/system_agent.py «Система, …» questions: rules knowledge + live sheets; code checks and performs any action
     app/mechanics.py  checks, inventory equip/use/give, Система commands, XP/levels
     app/cards.py      Character Card V2/V3 PNG/JSON + text import
     app/store.py      JSON saves: data/scenes/<id>.json, data/characters/<name>.json

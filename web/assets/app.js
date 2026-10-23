@@ -428,7 +428,7 @@ function noteHTML(kind, text, who) {
     ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><path d="M8 1 V 15 M2 5 L 14 11 M14 5 L 2 11" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>'
     : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 4 V 8 L 11 10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
   const co = p => `<svg class="co" aria-hidden="true" style="${p}"><use href="#diamond"/></svg>`;
-  return `${co('top:-7px;left:-7px')}${co('bottom:-7px;right:-7px')}<div class="nt">${icon}${esc(title)}</div><div class="nb">${esc(t.trim())}</div>`;
+  return `${co('top:-7px;left:-7px')}${co('bottom:-7px;right:-7px')}<div class="nt">${icon}${esc(title)}</div><div class="nb">${esc(t.trim()).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</div>`;
 }
 function fillSeg(el, kind, text, who, streaming = false) {
   if (kind === 'narration') {
@@ -575,7 +575,8 @@ inp.addEventListener('keydown', e => {
 function prefill(text) { inp.value = text; autosize(); closeSheet(); inp.focus(); inp.setSelectionRange(text.length, text.length); }
 
 const CMDS = [['Статус', 'здоровье, мана', 'статус'], ['Опись', 'инвентарь', 'инвентарь'], ['Способности', '', 'способности'], ['Состояния', '', 'состояния'],
-              ['Бой', 'порядок ходов', 'бой'], ['Своя команда…', '', null], ['Справка', '', 'помощь']];
+              ['Бой', 'порядок ходов', 'бой'], ['Пути магии', 'что открыто и что нужно', 'пути магии'],
+              ['Спросить Систему…', 'любой вопрос о правилах', null], ['Справка', '', 'помощь']];
 const menu = $('#sysMenu');
 menu.innerHTML = CMDS.map(([l, k, c], i) => `<button role="menuitem" data-i="${i}"><span>${l}</span><span class="k">${k}</span></button>`).join('');
 function toggleMenu(open) { menu.hidden = !open; $('#bSys').setAttribute('aria-expanded', open); }
@@ -586,7 +587,7 @@ menu.onclick = async e => {
   toggleMenu(false);
   const c = CMDS[b.dataset.i][2];
   if (c) send('Система, ' + c);
-  else { const v = await ask({ title: 'Заклинание Системы', text: 'Например: осмотри Сильфу, экипируй меч, распредели Сила +1', ok: 'Произнести', cancel: 'Отмена', input: '' }); if (v && v.trim()) send('Система, ' + v.trim()); }
+  else { const v = await ask({ title: 'Обратиться к Системе', text: 'Вопрос или команда: «что нужно для пути огня?», «осмотри Сильфу», «распредели Сила +1»', ok: 'Спросить', cancel: 'Отмена', input: '' }); if (v && v.trim()) send('Система, ' + v.trim()); }
 };
 
 function sendDirector(text, audit) {
@@ -644,6 +645,25 @@ const turnsLeft = n => `ещё ${n} ${plural(n, ['ход', 'хода', 'ходо
 
 let sheetWho = null;   // whose sheet the «Герой» ribbon shows: the hero or a companion
 const firstName = n => String(n || '').split(/\s+/)[0];
+const ROMAN3 = ['', 'I', 'II', 'III'];
+function pathsSection(state, c, hero, whom) {
+  const mg = state.magic;
+  if (!mg) return `<section><h2 class="sh">Пути магии</h2><p class="sub" style="margin:0 0 6px">Система ещё не рассказала о магии этого мира.</p>
+    <button class="tbtn" data-cmd="пути магии">Узнать о путях</button></section>`;
+  const rows = (mg.status[c.id] || []).map(x => {
+    const meta = mg.paths.find(p => p.id === x.id) || {};
+    const head = `<div class="top"><span class="nm">${esc(x.path)}</span><span class="kd">${x.have ? 'ступень ' + ROMAN3[x.have] : 'не открыт'}</span></div>
+      <span class="kd">${esc(meta.attr || '')}${meta.description && !x.have ? ' · ' + esc(meta.description) : ''}</span>`;
+    if (x.done) return `<div class="abil path">${head}<span class="ds">Все ступени пройдены.</span></div>`;
+    const next = `Ступень ${ROMAN3[x.tier]} даст: ${esc((x.abilities || []).join(', '))}.`;
+    return `<div class="abil path${x.ok ? ' ready' : ''}">${head}<span class="ds">${next}</span>
+      ${x.ok ? `<div><button class="tbtn" data-cmd="открой путь ${esc(x.path)} ${esc(whom)}">Открыть ступень ${ROMAN3[x.tier]}</button></div>`
+             : `<span class="ds miss">Не хватает: ${x.missing.map(esc).join('; ')}</span>`}</div>`;
+  }).join('');
+  return `<section><h2 class="sh">Пути магии</h2><div style="display:flex;flex-direction:column;gap:12px">${rows}</div>
+    <button class="tbtn" style="margin-top:8px" data-pre="Система, ">Спросить Систему…</button></section>`;
+}
+
 function memberSheet(state, c, info) {
   const d20 = state.rule_mode === 'd20', hero = c.id === state.player_id, fn = firstName(c.name);
   const whom = hero ? '' : fn + ' ';
@@ -690,6 +710,7 @@ function memberSheet(state, c, info) {
     ${c.ability_points ? `<section><h2 class="sh">Можно открыть · ${c.ability_points} ${plural(c.ability_points, ['очко', 'очка', 'очков'])}</h2>
       <div style="display:flex;flex-direction:column;gap:12px">${offers.map(offer).join('') || '<p class="sub" style="margin:0">Список появится после хода.</p>'}</div>
       <p class="sub" style="margin:8px 0 0">Список перемешивается с новым уровнем; закреплённые останутся.</p></section>` : ''}
+    ${pathsSection(state, c, hero, whom)}
     <section><h2 class="sh">Опись${hero ? '' : ' <span class="sub" style="font-family:var(--f-body);letter-spacing:0">— снаряжением спутник распоряжается сам</span>'}</h2>${(c.inventory || []).length ? `<div class="inv">${c.inventory.map(item).join('')}</div>` : '<p class="sub" style="margin:0">Пусто.</p>'}</section>
     ${hero ? '' : `<div style="text-align:center"><button class="tbtn" data-dismiss="${esc(c.name)}">Отпустить из отряда</button></div>`}`;
 }
