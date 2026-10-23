@@ -507,6 +507,18 @@ function onMsg(m) {
       scrollEnd(); return;
     }
     case 'segment': removeWriting(); addSeg(m.kind, m.text, m.who); if (busy) showWriting(); scrollEnd(); return;
+    case 'director_msg': {
+      const dl = $('#dirLog');
+      if (dl) {
+        const empty = dl.querySelector('li.sub'); if (empty) empty.remove();
+        const who = m.who || 'Директор';
+        const line = (who === 'Игрок' ? 'Игрок: ' : 'Директор: ') + String(m.text || '');
+        const cls = who === 'Игрок' ? 'dir-you' : 'dir-me';
+        dl.insertAdjacentHTML('afterbegin', `<li class="${cls}">${esc(line)}</li>`);
+      }
+      selectTab('director');
+      return;
+    }
     case 'turn_end': {
       removeWriting(); lastSent = '';
       renderSheet(m.state); updateTitle(m.state);
@@ -577,15 +589,27 @@ menu.onclick = async e => {
   else { const v = await ask({ title: 'Заклинание Системы', text: 'Например: осмотри Сильфу, экипируй меч, распредели Сила +1', ok: 'Произнести', cancel: 'Отмена', input: '' }); if (v && v.trim()) send('Система, ' + v.trim()); }
 };
 
-$('#bDir').onclick = () => {
-  const t = $('#dirInp').value.trim();
-  if (!t) { $('#dirInp').focus(); return toast('Напишите Директору — совет, правку или просто вопрос', true, 2800); }
-  $('#dirInp').value = ''; closeSheet(); send('Система, директор ' + t);
-};
+function sendDirector(text, audit) {
+  const t = (text || '').trim();
+  if (!audit && !t) { $('#dirInp').focus(); return toast('Напишите Директору — совет, правку или просто вопрос', true, 2800); }
+  if (busy) return;
+  if (!wsSend({ type: audit ? 'director_audit' : 'director', text: t })) return;
+  if ($('#dirInp')) $('#dirInp').value = '';
+  // stay on Director pane — separate chat, no story auto-replies
+  selectTab('director');
+  setBusy(true);
+  // optimistic player line in переписка
+  const dl = $('#dirLog');
+  if (dl && t) {
+    const empty = dl.querySelector('li.sub'); if (empty) empty.remove();
+    dl.insertAdjacentHTML('afterbegin', `<li class="dir-you">${esc('Игрок: ' + t)}</li>`);
+  }
+}
+$('#bDir').onclick = () => sendDirector($('#dirInp').value, false);
 $('#dirInp') && ($('#dirInp').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#bDir').click(); }
 });
-$('#bAudit').onclick = () => { closeSheet(); send('Система, проверь карточки'); };
+$('#bAudit').onclick = () => sendDirector('проверь карточки', true);
 
 let setT = null;
 function saveSettings(patch) {

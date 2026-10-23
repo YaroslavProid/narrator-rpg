@@ -68,6 +68,8 @@ class Character(BaseModel):
     attr_points: int = 0
     ability_points: int = 0
     skill_points: int = 0             # legacy alias; migrated → ability_points
+    ability_offers: list[str] = []    # current unlock offer names (reshuffled on level-up)
+    ability_locks: list[str] = []     # locked offer names — survive reshuffle
     attrs: dict[str, int] = Field(default_factory=lambda: {a: 10 for a in ATTRS})
     abilities: list[Ability] = []
     skills: dict[str, int] = {}       # legacy; emptied on migrate

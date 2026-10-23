@@ -209,8 +209,18 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
         c.attr_points += 2; c.ability_points += 1; c.skill_points = c.ability_points
+        if c.is_player:
+            reshuffle_ability_offers(scene, 3)
+            locked_n = len(getattr(c, "ability_locks", None) or [])
+            extra = (
+                f" Список способностей перемешан"
+                + (f" (сохранено зафиксированных: {locked_n})" if locked_n else "")
+                + "."
+            )
+        else:
+            extra = ""
         msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
-                    f"(«Система, распредели Сила +1»).")
+                    f"(«Система, распредели Сила +1»).{extra}")
 
 
 def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], list[str]]:
@@ -342,16 +352,34 @@ ABILITY_CATALOG = [
     {"name": "Контрудар", "kind": "active", "description": "После чужой атаки вблизи — ответный удар тем же ходом (по решению механики/рассказчика).", "cost": "", "cooldown": "1/сцена"},
 ]
 
+def _catalog_by_name() -> dict[str, dict]:
+    return {x["name"]: x for x in ABILITY_CATALOG}
 
-def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
-    """Pick unlockable abilities the player does not already have."""
+
+def _offer_seed(scene: Scene, level: int) -> int:
+    """Stable per level (not per turn) so opening the list mid-level does not reshuffle."""
+    return int(scene.rng_seed) + int(level) * 10007 + 42
+
+
+def reshuffle_ability_offers(scene: Scene, n: int = 3) -> list[dict]:
+    """Rebuild offer list for current level. Locked names stay; other slots reshuffle."""
     p = scene.player
     have = {norm(a.name) for a in p.abilities}
-    pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have]
-    if not pool:
-        return []
-    rng = random.Random(scene.rng_seed + scene.turn * 17 + p.ability_points * 3 + len(p.abilities) * 11)
+    cat = _catalog_by_name()
+    locked: list[str] = []
+    for name in list(getattr(p, "ability_locks", None) or []):
+        if name not in cat:
+            continue
+        if norm(name) in have:
+            continue
+        if name not in locked:
+            locked.append(name)
+    p.ability_locks = locked[:]
+    need = max(0, n - len(locked))
+    pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in locked]
+    rng = random.Random(_offer_seed(scene, p.level))
     rng.shuffle(pool)
+    # light preference by attrs (after shuffle, bubble preferred forward)
     attrs = p.attrs or {}
     prefer = []
     if attrs.get("Разум", 10) >= 15:
@@ -370,7 +398,80 @@ def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
     for x in pool:
         if x not in ordered:
             ordered.append(x)
-    return ordered[:n]
+    picked = locked + [x["name"] for x in ordered[:need]]
+    p.ability_offers = picked
+    return ability_offers(scene, n)
+
+
+def ability_offers(scene: Scene, n: int = 3) -> list[dict]:
+    """Current unlock offers. Creates/fills cache if empty; does not reshuffle mid-level."""
+    p = scene.player
+    have = {norm(a.name) for a in p.abilities}
+    cat = _catalog_by_name()
+    # drop taken / unknown from cache and locks
+    offers = [nm for nm in (getattr(p, "ability_offers", None) or []) if nm in cat and norm(nm) not in have]
+    locks = [nm for nm in (getattr(p, "ability_locks", None) or []) if nm in cat and norm(nm) not in have]
+    p.ability_locks = locks
+    if len(offers) < n:
+        # first open or after taking: fill remaining without wiping locks
+        if not offers and not locks:
+            return reshuffle_ability_offers(scene, n)
+        # partial refill keeping existing order + locks
+        have_names = set(offers)
+        pool = [x for x in ABILITY_CATALOG if norm(x["name"]) not in have and x["name"] not in have_names]
+        rng = random.Random(_offer_seed(scene, p.level) + len(p.abilities) * 13)
+        rng.shuffle(pool)
+        for x in pool:
+            if len(offers) >= n:
+                break
+            offers.append(x["name"])
+        p.ability_offers = offers
+    else:
+        p.ability_offers = offers[: max(n, len(locks))]
+        offers = p.ability_offers
+    out = []
+    for nm in offers[:n]:
+        x = dict(cat[nm])
+        x["locked"] = nm in locks
+        out.append(x)
+    return out
+
+
+def lock_ability_offer(scene: Scene, name: str) -> str:
+    p = scene.player
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, зафиксируй Рывок»."
+    offers = ability_offers(scene, 8)
+    pick = None
+    nl = norm(name)
+    for x in offers:
+        xn = norm(x["name"])
+        if xn == nl or nl in xn or xn in nl:
+            pick = x["name"]; break
+    if not pick:
+        return f"⟦ СИСТЕМА ⟧ «{name}» сейчас нет в списке предложений. Откройте: «Система, способности»."
+    locks = list(getattr(p, "ability_locks", None) or [])
+    if pick not in locks:
+        locks.append(pick)
+    p.ability_locks = locks
+    if pick not in (p.ability_offers or []):
+        p.ability_offers = [pick] + list(p.ability_offers or [])
+    return f"⟦ СИСТЕМА ⟧ Зафиксировано: **{pick}** — останется в списке при новом уровне."
+
+
+def unlock_ability_offer(scene: Scene, name: str) -> str:
+    p = scene.player
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return "⟦ СИСТЕМА ⟧ Укажите способность: «Система, открепи Рывок»."
+    locks = list(getattr(p, "ability_locks", None) or [])
+    nl = norm(name)
+    hit = next((x for x in locks if norm(x) == nl or nl in norm(x) or norm(x) in nl), None)
+    if not hit:
+        return f"⟦ СИСТЕМА ⟧ «{name}» не зафиксирована."
+    p.ability_locks = [x for x in locks if x != hit]
+    return f"⟦ СИСТЕМА ⟧ Снята фиксация с **{hit}** — при повышении уровня может уйти из списка."
 
 
 def take_ability(scene: Scene, name: str) -> str:
@@ -406,6 +507,9 @@ def take_ability(scene: Scene, name: str) -> str:
         description=pick.get("description") or "", cost=pick.get("cost") or "",
         cooldown=pick.get("cooldown") or "",
     ))
+    # remove from offers/locks
+    p.ability_offers = [x for x in (p.ability_offers or []) if norm(x) != norm(pick["name"])]
+    p.ability_locks = [x for x in (p.ability_locks or []) if norm(x) != norm(pick["name"])]
     kind_ru = "активная" if pick.get("kind") == "active" else "пассивная"
     return (
         f"### ⟦ СИСТЕМА · СПОСОБНОСТЬ ⟧\n"
@@ -512,9 +616,12 @@ def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
 
 def parse_system_command(text: str) -> tuple[str, str] | None:
     t = (text or "").strip().lower().lstrip("*\"«„“(_[ ")
-    # Soft meta: open ability list without «Система,» prefix
+    # Soft meta: open ability list without «Система,» prefix.
+    # Never steal Director chat (even if the message mentions abilities).
     meta = re.sub(r"^\*+|\*+$", "", t).strip()
-    if re.search(
+    if re.search(r"(директор|director|режиссёр|режиссер)", meta):
+        pass  # fall through to Система,/director parsing — or None for free chat
+    elif re.search(
         r"(очк\w*\s+способност|способност\w*\s+очк|список\s+навык|мои\s+(навыки|способности)|"
         r"куда\s+(можно\s+)?(вложить|потратить|распредел).{0,48}(способност|навык|очк)|"
         r"открой.{0,24}(навыки|способности)|смотрю.{0,40}(способност|навык|очк))",
@@ -535,6 +642,10 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
             k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
         return "director_audit", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
+    if any(k in r for k in ("зафикс", "закреп", "запин", "lock offer", "lock ability")):
+        return "lock_ability", r
+    if any(k in r for k in ("откреп", "отфикс", "сними фикс", "unlock offer", "unlock ability")):
+        return "unlock_ability", r
     if any(k in r for k in ("возьм", "выуч", "открой способ", "взять способ", "выбрать способ", "unlock", "learn")):
         return "take_ability", r
     if any(k in r for k in ("навык", "скил", "skill", "умени", "способн", "абил")) and "распредел" not in r and "влож" not in r:
@@ -603,15 +714,30 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         if p.ability_points > 0:
             offers = ability_offers(scene, 3)
             lines.append("")
-            lines.append("Можно открыть (1 очко за способность):")
+            lines.append("Можно открыть (1 очко за способность; список перемешивается с новым уровнем):")
             for i, x in enumerate(offers, 1):
                 kd = "акт." if x.get("kind") == "active" else "пасс."
-                lines.append(f"{i}. **{x['name']}** ({kd}) — {x.get('description') or '—'}")
+                lock = " 🔒" if x.get("locked") else ""
+                lines.append(f"{i}. **{x['name']}**{lock} ({kd}) — {x.get('description') or '—'}")
             tip = offers[0]["name"] if offers else "Название"
             lines.append(f"Взять: «Система, возьми {tip}».")
+            lines.append("Зафиксировать в списке (не уйдёт при уровне): «Система, зафиксируй {tip}».")
+            lines.append("Снять фиксацию: «Система, открепи {tip}».")
         else:
             lines.append("Очков способностей нет — они приходят с новым уровнем.")
         return chr(10).join(lines)
+    if cmd == "lock_ability":
+        name = re.sub(
+            r"зафикс\w*|закреп\w*|запин\w*|lock\s*offer|lock\s*ability|способност\w*",
+            "", rest, flags=re.I,
+        ).strip(" .,;:—-")
+        return lock_ability_offer(scene, name)
+    if cmd == "unlock_ability":
+        name = re.sub(
+            r"откреп\w*|отфикс\w*|сними\s*фикс\w*|unlock\s*offer|unlock\s*ability|способност\w*",
+            "", rest, flags=re.I,
+        ).strip(" .,;:—-")
+        return unlock_ability_offer(scene, name)
     if cmd == "take_ability":
         name = re.sub(
             r"возьм\w*|выуч\w*|открой|открыть|взять|выбрать|способност\w*|навык\w*|unlock|learn",

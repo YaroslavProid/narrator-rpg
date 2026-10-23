@@ -260,7 +260,7 @@ async def ws(websocket: WebSocket, sid: str):
             try:
                 msg = json.loads(raw)
                 t = msg.get("type")
-                if t not in ("input", "continue", "regenerate", "rewind"):
+                if t not in ("input", "continue", "regenerate", "rewind", "director", "director_audit"):
                     continue  # ping / unknown
                 if state["turn_running"]:  # e.g. a second tab; background archiving does not count
                     await websocket.send_text(json.dumps({"type": "error", "text": "рассказчик ещё занят прошлым ходом"},
@@ -271,6 +271,12 @@ async def ws(websocket: WebSocket, sid: str):
                     if t == "input":
                         if (msg.get("text") or "").strip():
                             await eng.handle(sc, msg["text"].strip(), emit)
+                    elif t == "director":
+                        # separate Director chat — never runs soft-meta / story auto-replies
+                        txt = (msg.get("text") or "").strip()
+                        await eng._director(sc, txt, emit, audit=False, chat=True)
+                    elif t == "director_audit":
+                        await eng._director(sc, (msg.get("text") or "").strip(), emit, audit=True, chat=True)
                     elif t == "continue":
                         await eng.handle(sc, None, emit)
                     elif t == "regenerate":

@@ -112,7 +112,12 @@ class TurnEngine:
         return {"player_id": scene.player_id, "present": scene.present, "rule_mode": scene.rule_mode, "turn": scene.turn,
                 "settings": scene.settings.model_dump(), "summaries": len(scene.summaries), "facts": len(scene.facts),
                 "archived_turn": scene.archived_turn, "combat": scene.combat.model_dump(),
-                "director_log": list(getattr(scene, "director_log", []) or [])[-8:],
+                "director_log": list(getattr(scene, "director_log", []) or [])[-24:],
+                "ability_offers": [
+                    {"name": x["name"], "kind": x.get("kind"), "description": x.get("description") or "",
+                     "locked": bool(x.get("locked"))}
+                    for x in M.ability_offers(scene, 3)
+                ] if scene.player.ability_points > 0 else [],
                 "characters": chars}
 
     def payload(self, scene):
@@ -152,16 +157,14 @@ class TurnEngine:
                     return st
             return await self._turn(scene, text, emit)
 
-    async def _director(self, scene: Scene, order: str, emit, *, audit: bool = False) -> dict:
-        """One-shot Director LLM call; apply card/scene patches; rebuild system_prompt if needed."""
+    async def _director(self, scene: Scene, order: str, emit, *, audit: bool = False, chat: bool = False) -> dict:
+        """Director LLM. chat=True: separate pane only (no soft-meta, no story feed flood)."""
         from . import director as D
-        # strip leading keywords from rest
         rest = re.sub(
             r"^(директор|director|режиссёр|режиссер|проверь\s+карточки|проверить\s+карточки|аудит)\s*[,:]?\s*",
             "", (order or "").strip(), flags=re.I,
         ).strip()
         if not rest and not audit:
-            # bare «Система, директор» → short hello/chat, not forced audit
             rest = (
                 "Привет. Коротко представься как Директор и скажи, чем можешь помочь "
                 "(совет по сюжету/тону, правки карточек, подсказка рассказчику). "
@@ -171,24 +174,32 @@ class TurnEngine:
             result = await D.run_director(self.llm, scene, rest, audit=audit, seed=self.seed(scene, 77))
         except Exception as e:
             err = f"⟦ ДИРЕКТОР ⟧ ошибка: {type(e).__name__}: {e}"
-            await self.sys_msg(emit, scene, err)
-            scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=err, witnesses=[scene.player_id]))
+            if chat:
+                await emit({"type": "director_msg", "who": "Директор", "text": err})
+            else:
+                await self.sys_msg(emit, scene, err)
+                scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=err, witnesses=[scene.player_id]))
             store.save_scene(scene)
             st = {"turn": scene.turn, "command": "director", "error": str(e), "llm_calls": [], "wall_s": 0}
             await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
             return st
-        text = "### ⟦ ДИРЕКТОР ⟧\n" + result["text"]
-        await self.sys_msg(emit, scene, text)
-        scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=text, witnesses=[scene.player_id]))
+        reply = (result.get("reply") or result.get("text") or "").strip()
+        if chat:
+            # stay in Director pane — do not inject into story transcript
+            await emit({"type": "director_msg", "who": "Директор", "text": reply})
+        else:
+            text = "### ⟦ ДИРЕКТОР ⟧\n" + result["text"]
+            await self.sys_msg(emit, scene, text)
+            scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=text, witnesses=[scene.player_id]))
         store.save_scene(scene)
-        # re-warm cache in background if prefix rebuilt
         if result.get("rebuilt"):
             try:
                 await self.llm.warm(self.prompt(scene))
             except Exception:
                 pass
         st = {"turn": scene.turn, "command": "director", "llm_calls": [result.get("stats") or {}],
-              "wall_s": (result.get("stats") or {}).get("wall_s"), "rebuilt": result.get("rebuilt")}
+              "wall_s": (result.get("stats") or {}).get("wall_s"), "rebuilt": result.get("rebuilt"),
+              "chat": bool(chat)}
         await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
         return st
 
