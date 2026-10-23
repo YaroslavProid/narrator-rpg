@@ -1,4 +1,4 @@
-"""Turn loop with a scripted fake LLM (no server)."""
+﻿"""Turn loop with a scripted fake LLM (no server)."""
 import asyncio
 from app.engine import TurnEngine
 from tests.test_mechanics import mk
@@ -41,7 +41,7 @@ def test_full_turn_inline_speech_and_roll():
     end = ev[-1]
     assert end["type"] == "turn_end"
     assert end["text"].startswith("*Дождь стучит по крыше.*\nСильфа: Заходи, промок ведь.\n*Ты тянешься к ключу.*")
-    assert "Ловкость рук" in end["text"]
+    assert "Ловкость" in end["text"]
     # append-only: every later prompt starts with the earlier narrator prompt (minus the open model header)
     assert llm.prompts[2].startswith(llm.prompts[0])
     assert "[РЕПЛИКА]" in llm.prompts[1] and "[РЕПЛИКА]" not in llm.prompts[2]

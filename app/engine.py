@@ -31,18 +31,44 @@ def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_
     pdata = {k: v for k, v in player.items() if k in ("personality", "speech")}
     p = new_character(scene, player["name"], player.get("description", ""), is_player=True, **pdata)
     scene.player_id = p.id
+    if player.get("kind"):
+        p.kind = str(player["kind"])[:60]
     for a, v in (player.get("attrs") or {}).items():
         a2 = M.resolve_attr(a)
         if a2: p.attrs[a2] = max(3, min(20, int(v)))
-    for s, v in (player.get("skills") or {}).items():
-        s2 = M.resolve_skill(s)
-        if s2: p.skills[s2] = max(0, min(5, int(v)))
+    from .models import Ability
+    for ab in player.get("abilities") or []:
+        if isinstance(ab, str):
+            p.abilities.append(Ability(name=ab[:40], kind="passive"))
+        elif isinstance(ab, dict) and ab.get("name"):
+            kind = ab.get("kind") or "passive"
+            if kind not in ("active", "passive"):
+                kind = "passive"
+            p.abilities.append(Ability(
+                name=str(ab["name"])[:40], kind=kind,
+                description=str(ab.get("description") or "")[:200],
+                cost=str(ab.get("cost") or "")[:40],
+                cooldown=str(ab.get("cooldown") or "")[:40],
+            ))
+    p.reveal.kind = p.reveal.attrs = p.reveal.abilities = True
     for it in player.get("inventory") or []:
         M.apply_delta(scene, p, {"add": it})
     scene.present = [p.id]
     for n in npcs:
         c = new_character(scene, n["name"], n.get("description", ""), personality=n.get("personality", ""),
-                          speech=n.get("speech", ""), secrets=n.get("secrets", ""))
+                          speech=n.get("speech", ""), secrets=n.get("secrets", ""),
+                          kind=str(n.get("kind") or "")[:60])
+        for ab in n.get("abilities") or []:
+            if isinstance(ab, dict) and ab.get("name"):
+                kind = ab.get("kind") or "passive"
+                if kind not in ("active", "passive"):
+                    kind = "passive"
+                c.abilities.append(Ability(
+                    name=str(ab["name"])[:40], kind=kind,
+                    description=str(ab.get("description") or "")[:200],
+                    cost=str(ab.get("cost") or "")[:40],
+                    cooldown=str(ab.get("cooldown") or "")[:40],
+                ))
         if n.get("present", True):
             scene.present.append(c.id)
         store.save_card(c)
@@ -81,10 +107,12 @@ class TurnEngine:
         await emit({"type": "segment", "id": next(_seg), "kind": kind, "who": "Система", "text": text})
 
     def state(self, scene):
+        in_combat = bool(scene.combat and scene.combat.active)
+        chars = {k: M.public_char_dict(v, in_combat=in_combat) for k, v in scene.characters.items()}
         return {"player_id": scene.player_id, "present": scene.present, "rule_mode": scene.rule_mode, "turn": scene.turn,
                 "settings": scene.settings.model_dump(), "summaries": len(scene.summaries), "facts": len(scene.facts),
                 "archived_turn": scene.archived_turn, "combat": scene.combat.model_dump(),
-                "characters": {k: v.model_dump() for k, v in scene.characters.items()}}
+                "characters": chars}
 
     def prompt(self, scene, open_model=None, extra=None):
         pre = []
@@ -550,7 +578,8 @@ class TurnEngine:
         extra = [{"role": "user", "content": f"[СИСТЕМА: ошибка формата] {error}. Повтори только один тег протокола, например "
                                              f"<speak who=\"Имя\" intent=\"…\"/> или <end/>."}]
         names = [scene.characters[i].name for i in scene.present if i != scene.player_id]
-        g = tag_grammar(names, list(M.SKILLS))
+        from .models import ATTRS as _ATTRS
+        g = tag_grammar(names, list(_ATTRS))
         try:
             content, st = await self.llm.complete(self.prompt(scene, open_model="", extra=extra), 80, stop=["<turn|>"],
                                                   grammar=g, temperature=0.3)
@@ -600,6 +629,32 @@ class TurnEngine:
             transcript.append({"kind": "roll", "text": full})
             scene.log.append(Event(turn=scene.turn, kind="roll", who=who.name, text=r["text"], witnesses=list(scene.present)))
             return r["text"] + " Опиши последствия согласно результату."
+
+        if tag.name == "reveal":
+            c = M.resolve_character(scene, a.get("who", ""))
+            if not c:
+                return f"Нет персонажа «{a.get('who')}» для reveal."
+            if c.is_player:
+                return "Игрок и так знает себя."
+            got = M.apply_reveal(c, a.get("what", "all") or "all")
+            kind = c.kind if c.reveal.kind else "неизвестно"
+            parts = [f"Ты узнаёшь о {c.name}: вид — {kind}."]
+            if c.reveal.attrs:
+                parts.append("Характеристики: " + ", ".join(f"{k} {v}" for k, v in c.attrs.items()) + ".")
+            if c.reveal.abilities:
+                if c.abilities:
+                    parts.append("Способности: " + ", ".join(
+                        ("⚡" if x.kind == "active" else "◇") + x.name for x in c.abilities) + ".")
+                else:
+                    parts.append("Особых способностей не видно.")
+            text = " ".join(parts)
+            if got:
+                text += " (открыто: " + ", ".join(got) + ")"
+            await self.sys_msg(emit, scene, "👁 " + text)
+            transcript.append({"kind": "system", "text": text})
+            self.log(scene, "system", text, "Система")
+            return text
+
         if tag.name == "change":
             c = M.resolve_character(scene, a.get("who", ""))
             if not c:

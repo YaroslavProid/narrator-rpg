@@ -1,16 +1,27 @@
-"""Deterministic mechanics: skills, checks, clamped deltas, levels, 'Система, ...' commands.
-Concepts ported from the Talemate scene module 'дракония-малфой' (system-handle-input,
-system-update-stats, system-auto-update)."""
+"""Deterministic mechanics: soft attributes, named abilities, checks, deltas, 'Система' commands."""
 import difflib, math, random, re
-from .models import ATTRS, Character, Item, Scene
+from .models import ATTRS, ATTR_MIGRATE, Ability, Character, Item, Reveal, Scene
 
-SKILLS = {  # Russian skill -> attribute
-    "Атлетика": "Сила", "Ближний бой": "Сила", "Акробатика": "Ловкость", "Скрытность": "Ловкость",
-    "Ловкость рук": "Ловкость", "Взлом": "Ловкость", "Стрельба": "Ловкость", "Выносливость": "Телосложение",
-    "Магия": "Интеллект", "Знания": "Интеллект", "Расследование": "Интеллект", "Восприятие": "Мудрость",
-    "Проницательность": "Мудрость", "Выживание": "Мудрость", "Медицина": "Мудрость", "Убеждение": "Харизма",
-    "Обман": "Харизма", "Запугивание": "Харизма", "Выступление": "Харизма",
+# Soft-stat thresholds (attr vs baseline 10, or vs DC / opponent):
+# |gap| ≤ SOFT_NEGLIGIBLE → weight 0 (narrative / near coin-flip)
+# SOFT_NEGLIGIBLE < |gap| ≤ SOFT_MODERATE → ±1
+# |gap| > SOFT_MODERATE → ±max(2, |gap|//2)  (colossal gap dominates)
+SOFT_NEGLIGIBLE = 2
+SOFT_MODERATE = 4
+
+# Legacy skill names → attribute (old saves / old <roll skill="Скрытность">)
+LEGACY_SKILL_ATTR = {
+    "Атлетика": "Сила", "Ближний бой": "Сила",
+    "Акробатика": "Ловкость", "Скрытность": "Ловкость", "Ловкость рук": "Ловкость",
+    "Взлом": "Ловкость", "Стрельба": "Ловкость",
+    "Выносливость": "Выносливость",
+    "Магия": "Разум", "Знания": "Разум", "Расследование": "Разум",
+    "Восприятие": "Воля", "Проницательность": "Воля", "Выживание": "Воля", "Медицина": "Воля",
+    "Убеждение": "Влияние", "Обман": "Влияние", "Запугивание": "Влияние", "Выступление": "Влияние",
 }
+# Keep SKILLS alias for any leftover imports (maps to attr name as "skill" label → attr)
+SKILLS = {k: v for k, v in LEGACY_SKILL_ATTR.items()}
+
 SKILL_ALIASES = {
     "athletics": "Атлетика", "strength": "Атлетика", "melee": "Ближний бой", "attack": "Ближний бой", "fight": "Ближний бой",
     "combat": "Ближний бой", "acrobatics": "Акробатика", "dexterity": "Акробатика", "stealth": "Скрытность", "sneak": "Скрытность",
@@ -25,10 +36,14 @@ SKILL_ALIASES = {
     "внимательность": "Восприятие", "наблюдательность": "Восприятие", "ловкость": "Акробатика", "сила": "Атлетика",
     "харизма": "Убеждение", "воровство": "Ловкость рук", "карманная кража": "Ловкость рук", "бой": "Ближний бой",
     "атака": "Ближний бой", "угроза": "Запугивание", "ложь": "Обман", "незаметность": "Скрытность", "стелс": "Скрытность",
+    "will": "Воля", "mind": "Разум", "influence": "Влияние", "presence": "Влияние", "spirit": "Воля",
 }
-ATTR_ALIASES = {"сил": "Сила", "лов": "Ловкость", "тел": "Телосложение", "вын": "Телосложение", "инт": "Интеллект",
-                "муд": "Мудрость", "хар": "Харизма", "str": "Сила", "dex": "Ловкость", "agi": "Ловкость", "con": "Телосложение",
-                "vit": "Телосложение", "int": "Интеллект", "wis": "Мудрость", "cha": "Харизма"}
+ATTR_ALIASES = {
+    "сил": "Сила", "лов": "Ловкость", "вын": "Выносливость", "тел": "Выносливость",
+    "вол": "Воля", "муд": "Воля", "раз": "Разум", "инт": "Разум", "влия": "Влияние", "хар": "Влияние",
+    "str": "Сила", "dex": "Ловкость", "agi": "Ловкость", "con": "Выносливость", "vit": "Выносливость",
+    "int": "Разум", "wis": "Воля", "cha": "Влияние", "wil": "Воля",
+}
 FORBIDDEN_ITEM_WORDS = ["легендар", "божествен", "артефакт", "бессмерт", "всемогущ", "legendary", "artifact", "divine"]
 LIMITS = {"hp_frac": 0.3, "mp_frac": 0.5, "exp_event": 50, "exp_turn": 100, "items_per_event": 2, "item_len": 40}
 
@@ -45,28 +60,34 @@ def norm(s: str) -> str:
     return re.sub(r"[\s_\-]+", " ", (s or "").strip().lower().strip("\"'«»"))
 
 
-def resolve_skill(name: str) -> str | None:
-    n = norm(name)
-    for s in SKILLS:
-        if s.lower() == n:
-            return s
-    if n in SKILL_ALIASES:
-        return SKILL_ALIASES[n]
-    if n.replace(" ", "_") in SKILL_ALIASES:
-        return SKILL_ALIASES[n.replace(" ", "_")]
-    pool = {s.lower(): s for s in SKILLS} | SKILL_ALIASES
-    m = difflib.get_close_matches(n, list(pool), n=1, cutoff=0.6)
-    if m:
-        v = pool[m[0]]
-        return v
-    return None
+def soft_weight(value: int, baseline: int = 10) -> int:
+    """Soft modifier: small gaps barely matter; colossal gaps dominate."""
+    d = int(value) - int(baseline)
+    ad = abs(d)
+    if ad <= SOFT_NEGLIGIBLE:
+        return 0
+    if ad <= SOFT_MODERATE:
+        return 1 if d > 0 else -1
+    return max(2, ad // 2) * (1 if d > 0 else -1)
+
+
+def soft_label(weight: int) -> str:
+    if weight == 0:
+        return "разрыв ничтожен"
+    if abs(weight) == 1:
+        return "небольшой перевес"
+    return "колоссальный разрыв"
 
 
 def resolve_attr(name: str) -> str | None:
     n = norm(name)
+    if not n:
+        return None
     for a in ATTRS:
         if a.lower() == n:
             return a
+    if name in ATTR_MIGRATE:
+        return ATTR_MIGRATE[name]
     for k, v in ATTR_ALIASES.items():
         if n.startswith(k):
             return v
@@ -74,8 +95,33 @@ def resolve_attr(name: str) -> str | None:
     return next((a for a in ATTRS if m and a.lower() == m[0]), None)
 
 
+def resolve_skill(name: str) -> str | None:
+    """Legacy: resolve old skill name; returns the skill's canonical Russian name or None."""
+    n = norm(name)
+    for s in LEGACY_SKILL_ATTR:
+        if s.lower() == n:
+            return s
+    if n in SKILL_ALIASES:
+        return SKILL_ALIASES[n]
+    if n.replace(" ", "_") in SKILL_ALIASES:
+        return SKILL_ALIASES[n.replace(" ", "_")]
+    pool = {s.lower(): s for s in LEGACY_SKILL_ATTR} | SKILL_ALIASES
+    m = difflib.get_close_matches(n, list(pool), n=1, cutoff=0.6)
+    return pool[m[0]] if m else None
+
+
+def resolve_check_attr(raw: str) -> str:
+    """What attribute a <roll skill=...> or check uses (attrs first, then legacy skills)."""
+    a = resolve_attr(raw)
+    if a:
+        return a
+    sk = resolve_skill(raw)
+    if sk:
+        return LEGACY_SKILL_ATTR[sk]
+    return "Воля"  # default perception-ish
+
+
 def resolve_character(scene: Scene, name: str, only_present: bool = False) -> Character | None:
-    """Alias map + transliteration + fuzzy matching of a model-provided name."""
     n = norm(name)
     if not n:
         return None
@@ -98,6 +144,7 @@ def resolve_character(scene: Scene, name: str, only_present: bool = False) -> Ch
 
 
 def mod(v: int) -> int:
+    """Legacy hard modifier — prefer soft_weight for checks; kept for AC/display."""
     return (v - 10) // 2
 
 
@@ -108,30 +155,38 @@ def rng(scene: Scene) -> random.Random:
 
 
 def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
-    """d20 mode: d20 + mod(attr) + skill vs DC, nat 20 crit / nat 1 fumble.
-    'система' mode: no dice, 10 + mod + 2*skill vs DC."""
-    skill = resolve_skill(skill_raw) or "Восприятие"
+    """Soft attribute check. Small gaps barely matter; large gaps dominate.
+    d20: d20 + soft_weight(attr, 10) vs DC.
+    система: soft compare attr vs DC (as target rating), no die unless tied."""
+    attr = resolve_check_attr(skill_raw)
     try:
         dc = int(re.sub(r"[^\d-]", "", str(dc_raw)) or 12)
     except ValueError:
         dc = 12
     dc = max(5, min(30, dc))
-    attr = SKILLS[skill]
-    m = mod(who.attrs.get(attr, 10)); sk = who.skills.get(skill, 0)
-    res = {"who": who.name, "skill": skill, "attr": attr, "mod": m, "skill_lvl": sk, "dc": dc, "mode": scene.rule_mode}
+    aval = who.attrs.get(attr, 10)
+    w = soft_weight(aval, 10)
+    res = {"who": who.name, "skill": attr, "attr": attr, "mod": w, "skill_lvl": 0, "dc": dc,
+           "mode": scene.rule_mode, "attr_val": aval, "soft": soft_label(w)}
     if scene.rule_mode == "d20":
         d = rng(scene).randint(1, 20)
-        total = d + m + sk
+        total = d + w
         ok = d == 20 or (d != 1 and total >= dc)
         res.update(die=d, total=total, success=ok, crit=d == 20, fumble=d == 1)
         tag = " (критический успех!)" if d == 20 else " (критический провал!)" if d == 1 else ""
-        res["text"] = (f"Проверка «{skill}» ({who.name}): 1d20({d}) {m:+d} {('+ навык ' + str(sk)) if sk else ''}= {total} "
-                       f"против {dc} — {'успех' if ok else 'провал'}{tag}.").replace("  ", " ")
+        soft = f", {res['soft']}" if w != 0 or True else ""
+        res["text"] = (f"Проверка «{attr}» ({who.name}): 1d20({d}) {w:+d} = {total} "
+                       f"против {dc} — {'успех' if ok else 'провал'}{tag} [{res['soft']}, {attr} {aval}].")
     else:
-        total = 10 + m + 2 * sk
-        ok = total >= dc
-        res.update(die=None, total=total, success=ok, crit=False, fumble=False)
-        res["text"] = f"Проверка «{skill}» ({who.name}, без броска): {attr} {m:+d}, навык {sk} → {total} против {dc} — {'успех' if ok else 'провал'}."
+        # Non-dice: compare character rating to DC as target rating via soft gaps
+        gap_w = soft_weight(aval, dc)
+        if gap_w == 0:
+            ok = aval >= dc  # near-equal: slight lean
+        else:
+            ok = gap_w > 0
+        res.update(die=None, total=aval, success=ok, crit=False, fumble=False, mod=gap_w, soft=soft_label(gap_w))
+        res["text"] = (f"Проверка «{attr}» ({who.name}, без броска): {attr} {aval} против {dc} — "
+                       f"{'успех' if ok else 'провал'} [{res['soft']}].")
     return res
 
 
@@ -153,9 +208,9 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list):
         c.exp_next = int(c.exp_next * 1.5)
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
-        c.attr_points += 2; c.skill_points += 1
-        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 навык "
-                    f"(«Система, распредели Сила +1» / «Система, навык Скрытность +1»).")
+        c.attr_points += 2; c.ability_points += 1; c.skill_points = c.ability_points
+        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
+                    f"(«Система, распредели Сила +1»).")
 
 
 def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], list[str]]:
@@ -273,6 +328,101 @@ def give_item(scene: Scene, giver: Character, name: str, receiver: Character) ->
 
 
 # ---------------- 'Система, ...' commands ----------------
+
+def apply_reveal(c: Character, what: str) -> list[str]:
+    """Mark reveal flags on NPC. what: kind|attrs|abilities|all."""
+    w = norm(what) or "all"
+    do_kind = w in ("all", "всё", "все", "full", "kind") or any(x in w for x in ("тип", "вид", "род"))
+    do_attrs = w in ("all", "всё", "все", "full", "attrs", "attr", "stats") or any(
+        x in w for x in ("характер", "стат", "атрибут", "показат"))
+    do_abil = w in ("all", "всё", "все", "full", "abilities", "ability") or any(
+        x in w for x in ("способн", "навык", "абил"))
+    if w in ("all", "всё", "все", "full", ""):
+        do_kind = do_attrs = do_abil = True
+    got = []
+    if do_kind and not c.reveal.kind:
+        c.reveal.kind = True; got.append("вид")
+    elif do_kind:
+        c.reveal.kind = True
+    if do_attrs and not c.reveal.attrs:
+        c.reveal.attrs = True; got.append("характеристики")
+    elif do_attrs:
+        c.reveal.attrs = True
+    if do_abil and not c.reveal.abilities:
+        c.reveal.abilities = True; got.append("способности")
+    elif do_abil:
+        c.reveal.abilities = True
+    return got
+
+
+def inspect_target(scene: Scene, rest: str) -> str:
+    """Система, осмотри <имя> — soft Воля check; on success reveal kind (and more if roll is strong)."""
+    name = re.sub(r"осмотр\w*|изуч\w*|inspect|observe|разгляд\w*|рассмотр\w*|кого|что", "", rest, flags=re.I).strip(" .,")
+    if not name:
+        return "⟦ СИСТЕМА ⟧ Укажите цель: «Система, осмотри Сильфу»."
+    c = resolve_character(scene, name)
+    if not c:
+        return f"⟦ СИСТЕМА ⟧ Нет персонажа «{name}»."
+    if c.is_player:
+        return "⟦ СИСТЕМА ⟧ Себя вы и так знаете — смотрите статус."
+    # Soft observation check vs DC 12
+    r = check(scene, scene.player, "Воля", 12)
+    lines = ["### ⟦ СИСТЕМА · ОСМОТР ⟧", r["text"]]
+    if not r["success"]:
+        lines.append(f"Ты не замечаешь о {c.name} ничего нового.")
+        return "\n".join(lines)
+    # Success: always kind; good margin also attrs; crit/colossal also abilities
+    got = apply_reveal(c, "kind")
+    margin = (r.get("total") or r.get("attr_val") or 10) - r["dc"]
+    if r.get("crit") or margin >= 5 or r.get("mod", 0) >= 2:
+        got += apply_reveal(c, "attrs")
+    if r.get("crit") or margin >= 8:
+        got += apply_reveal(c, "abilities")
+    elif r["success"] and soft_weight(scene.player.attrs.get("Воля", 10), 10) >= 2:
+        got += apply_reveal(c, "attrs")
+    kind = c.kind or "неизвестно"
+    lines.append(f"Наблюдение за {c.name}:")
+    lines.append(f"- вид: {kind if c.reveal.kind else 'неизвестно'}")
+    if c.reveal.attrs:
+        lines.append("- характеристики: " + ", ".join(f"{a} {c.attrs.get(a, 10)}" for a in ATTRS))
+    else:
+        lines.append("- характеристики: неизвестно")
+    if c.reveal.abilities:
+        if c.abilities:
+            lines.append("- способности: " + ", ".join(
+                ("⚡ " if a.kind == "active" else "◇ ") + a.name for a in c.abilities))
+        else:
+            lines.append("- способности: не видно особых")
+    else:
+        lines.append("- способности: неизвестно")
+    if got:
+        lines.append("Открыто: " + ", ".join(dict.fromkeys(got)) + ".")
+    return "\n".join(lines)
+
+
+def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
+    """Client-facing character view: hide unrevealed NPC stats."""
+    if c.is_player:
+        d = c.model_dump()
+        return d
+    d = {
+        "id": c.id, "name": c.name, "is_player": False,
+        "kind": c.kind if c.reveal.kind else "",
+        "kind_known": c.reveal.kind,
+        "description": c.description if c.reveal.kind else "",
+        "level": c.level if c.reveal.attrs else 0,
+        "hp": c.hp if (c.reveal.attrs or in_combat) else None,
+        "max_hp": c.max_hp if (c.reveal.attrs or in_combat) else None,
+        "mp": c.mp if c.reveal.attrs else None,
+        "max_mp": c.max_mp if c.reveal.attrs else None,
+        "attrs": dict(c.attrs) if c.reveal.attrs else {},
+        "abilities": [a.model_dump() for a in c.abilities] if c.reveal.abilities else [],
+        "reveal": c.reveal.model_dump(),
+        "conditions": [x.model_dump() for x in c.conditions] if (c.reveal.attrs or in_combat) else [],
+    }
+    return d
+
+
 def parse_system_command(text: str) -> tuple[str, str] | None:
     t = (text or "").strip().lower().lstrip("*\"«„“(_[ ")
     rest = None; p = ""
@@ -283,10 +433,9 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
         return None
     r = re.sub(r"[,:.!?*»\"]", " ", rest).strip()
     if r == "" or any(k in r for k in ("стат", "status", "характ", "stats", "показат")): return "status", r
-    if any(k in r for k in ("навык", "скил", "skill", "умени", "способн")) and "распредел" not in r and "влож" not in r:
-        if re.search(r"\+\s*\d|\b\+\b", r) or "уровень" in r:
-            return "train", r
-        return "skills", r
+    if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
+    if any(k in r for k in ("навык", "скил", "skill", "умени", "способн", "абил")) and "распредел" not in r and "влож" not in r:
+        return "abilities", r
     if any(k in r for k in ("инвент", "invent", "сумк", "предмет", "вещи")): return "inventory", r
     if any(k in r for k in ("экип", "надень", "надет", "equip", "вооруж")): return "equip", r
     if any(k in r for k in ("сними", "снят", "unequip")): return "unequip", r
@@ -312,7 +461,7 @@ def status_text(c: Character) -> str:
     if c.conditions:
         lines.append("Состояния: " + ", ".join(f"{x.name}({x.turns_left})" for x in c.conditions))
     if c.attr_points or c.skill_points:
-        lines.append(f"Очки: атрибуты {c.attr_points}, навыки {c.skill_points}")
+        lines.append(f"Очки: атрибуты {c.attr_points}, способности {c.ability_points}")
     eq = [i for i in c.inventory if i.equipped]
     if eq:
         lines.append("Экипировка: " + ", ".join(i.name for i in eq))
@@ -331,11 +480,24 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         if others:
             s += "\nРядом: " + ", ".join(f"{o.name} (HP {o.hp}/{o.max_hp})" for o in others)
         return s
-    if cmd == "skills":
-        if not p.skills:
-            return "### ⟦ СИСТЕМА · НАВЫКИ ⟧\nНавыков пока нет. Проверки идут по атрибутам."
-        return "### ⟦ СИСТЕМА · НАВЫКИ ⟧\n" + "\n".join(
-            f"- {k} ({SKILLS.get(k, '?')}): уровень {v}" for k, v in sorted(p.skills.items()))
+    if cmd == "abilities":
+        if not p.abilities:
+            return "### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧\nПока нет. «Навыки» здесь — активные и пассивные умения (не «ближний бой»)."
+        act = [a for a in p.abilities if a.kind == "active"]
+        pas = [a for a in p.abilities if a.kind != "active"]
+        lines = []
+        if act:
+            lines.append("Активные:")
+            for a in act:
+                extra = ", ".join(x for x in (a.cost and f"цена {a.cost}", a.cooldown and f"кд {a.cooldown}") if x)
+                lines.append(f"- {a.name}" + (f" ({extra})" if extra else "") + (f" — {a.description}" if a.description else ""))
+        if pas:
+            lines.append("Пассивные:")
+            for a in pas:
+                lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
+        return "### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧\n" + "\n".join(lines)
+    if cmd == "inspect":
+        return inspect_target(scene, rest)
     if cmd == "inventory":
         if not p.inventory:
             return "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\nПусто."
@@ -380,20 +542,13 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         p.attr_points -= n; p.attrs[attr] += n
         return f"⟦ СИСТЕМА ⟧ {attr} {p.attrs[attr] - n}→{p.attrs[attr]}. Осталось очков: {p.attr_points}."
     if cmd == "train":
-        m = re.search(r"([а-яёa-z ]+?)\s*\+?\s*(\d+)?$", re.sub(r"навык\w*|скил\w*|skill|уровен\w*", "", rest).strip())
-        skill = resolve_skill(m.group(1)) if m else None
-        n = int(m.group(2) or 1) if m else 1
-        if not skill:
-            return "⟦ СИСТЕМА ⟧ Укажите навык из списка."
-        if n > p.skill_points:
-            return f"⟦ СИСТЕМА ⟧ Недостаточно очков навыков: есть {p.skill_points}."
-        p.skill_points -= n; p.skills[skill] = p.skills.get(skill, 0) + n
-        return f"⟦ СИСТЕМА ⟧ {skill} → {p.skills[skill]}. Осталось очков навыков: {p.skill_points}."
+        return "⟦ СИСТЕМА ⟧ Очки навыков больше не вкладываются в «ближний бой» — проверки по атрибутам. Способности выдаёт сюжет/ИИ."
     return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
-            "- «Система, статус» / навыки / инвентарь / состояния / бой\n"
+            "- «Система, статус» / способности / инвентарь / состояния / бой\n"
+            "- «Система, осмотри Имя» — разведка противника\n"
             "- «Система, экипируй Короткий меч» / «сними Щит»\n"
             "- «Система, используй Зелье лечения» / «дай Нож Сильфе»\n"
-            "- «Система, распредели Сила +1» / «навык Скрытность +1»\n"
+            "- «Система, распредели Сила +1»\n"
             "- «Система, помощь»\n"
             "Кнопка «Продолжить» — мир действует без вашего хода.")
 

@@ -397,13 +397,13 @@ footer textarea {
   header { padding: .5rem 1.25rem; }
   #chat { padding: 1.25rem 1.5rem 1.5rem; }
   #side {
-    position: relative; transform: none;
+    position: relative; transform: none !important;
     box-shadow: none; flex-shrink: 0;
     border-left: 1px solid var(--line);
+    display: block !important;
   }
-  #side:not(.open) { display: none; }
-  #side.open { display: block; }
   #backdrop { display: none !important; }
+  #bSide { display: none !important; }
   .toolbar button .lbl { display: inline; margin-left: .3rem; }
   footer { padding: .65rem 1.25rem .75rem; max-width: none; }
   .composer { max-width: 820px; margin: 0 auto; width: 100%; }
@@ -455,7 +455,7 @@ footer textarea {
   </div>
   <div class="card" id="createPc">
     <div class="card-title">Ваш персонаж</div>
-    <p class="hint">Атрибуты, навыки и стартовый набор подберёт ИИ под мир и режим правил.</p>
+    <p class="hint">Атрибуты, способности (актив/пассив) и стартовый набор подберёт ИИ. Проверки — по атрибутам, не по «ближнему бою».</p>
     <label>Имя</label>
     <input id="pName" value="Ярен" placeholder="Имя героя">
     <label>Кратко о нём</label>
@@ -520,6 +520,7 @@ function view(v){
   $('bSide').style.display=g?'':'none';
   $('bBack').style.display='';
   if(!g){ closeSide(); $('subtitle').textContent='локальный рассказчик'; }
+  else if(window.innerWidth>=900){ side.classList.add('open'); }
 }
 
 function toggleSide(){
@@ -592,7 +593,7 @@ function backToForm(){
 function renderPreview(d){
   const p=d.player||{};
   const attrs=Object.entries(p.attrs||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ');
-  const skills=Object.entries(p.skills||{}).map(([k,v])=>`${esc(k)}=${v}`).join(', ')||'—';
+  const abs=(p.abilities||[]).map(a=>esc(a.name)+' ('+(a.kind==='active'?'акт.':'пас.')+')').join(', ')||'—';
   const inv=(p.inventory||[]).map(esc).join(', ')||'—';
   let h=`<div class="hint" style="margin-bottom:.6rem">Проверьте и нажмите «Начать сцену». Атрибуты задал ИИ — править вручную не нужно.</div>`;
   h+=`<b>${esc(d.title)}</b>`;
@@ -602,7 +603,7 @@ function renderPreview(d){
   h+=`<div style="font-size:.9rem;margin-bottom:.35rem">${esc(p.description||'')}</div>`;
   if(p.personality) h+=`<div class="hint">Характер: ${esc(p.personality)}</div>`;
   h+=`<div class="attrs" style="margin:.4rem 0">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
-  h+=`<div class="hint">Навыки: ${skills}</div>`;
+  h+=`<div class="hint">Способности: ${abs}</div>`;
   h+=`<div class="hint" style="margin-bottom:.8rem">Набор: ${inv}</div>`;
   h+=`<div class="card-title">NPC (${(d.npcs||[]).length})</div>`;
   for(const n of (d.npcs||[])){
@@ -651,13 +652,354 @@ async function confirmScene(){
       player:{
         name:d.player.name, description:d.player.description,
         personality:d.player.personality||'', speech:d.player.speech||'',
-        attrs:d.player.attrs||{}, skills:d.player.skills||{},
+        kind:d.player.kind||'', attrs:d.player.attrs||{},
+        abilities:d.player.abilities||[],
         inventory:d.player.inventory||[]
       },
       npcs:(d.npcs||[]).map(n=>({
         name:n.name, description:n.description||'',
         personality:n.personality||'', speech:n.speech||'',
-        secrets:n.secrets||'', present:n.present!==false
+        secrets:n.secrets||'', kind:n.kind||'',
+        abilities:n.abilities||[], present:n.present!==false
+      }))
+    };
+    const r=await fetch('api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
+    sceneDraft=null; openScene(j.id);
+  }catch(e){ alert('Не удалось создать: '+e.message); }
+  finally{ b.disabled=false; b.textContent='Начать сцену'; }
+}
+
+
+function add(kind,text,who,id){
+  const d=document.createElement('div');
+  d.className='m '+kind; if(id) d.dataset.id=id;
+  setText(d,kind,text,who);
+  chat.appendChild(d);
+  chat.scrollTop=chat.scrollHeight;
+  return d;
+}
+function setText(d,kind,text,who){
+  d.className='m '+kind;
+  d.innerHTML=kind==='speech' ? `<b>${esc(who)}:</b> ${esc(text)}` : esc(text);
+}
+async function renderLog(id){
+  const s=await (await fetch('api/scenes/'+encodeURIComponent(id))).json();
+  scene=s;
+  $('title').textContent=s.title;
+  $('subtitle').textContent=s.rule_mode+' · ход '+s.turn;
+  chat.innerHTML=''; segs={};
+  let last=-1;
+  for(const e of s.log){
+    if(e.kind==='player'&&e.turn!==last){ addPlayer(e.text,e.turn); last=e.turn; }
+    else add(e.kind,e.text,e.who);
+  }
+  renderSide(s.state);
+  return s;
+}
+function addPlayer(text,turn){
+  const d=add('player',text);
+  if(turn){
+    const b=document.createElement('button');
+    b.className='rw'; b.textContent='↶'; b.title='Откатить к началу этого хода';
+    b.onclick=()=>{
+      if(!busy&&ws&&ws.readyState===1&&confirm('Откатить игру к началу хода '+turn+'?')){
+        ws.send(JSON.stringify({type:'rewind',turn})); setBusy(true);
+      }
+    };
+    d.prepend(b);
+  }
+  return d;
+}
+
+async function openScene(id){
+  view('vGame');
+  if(ws){ try{ws.close();}catch(e){} ws=null; }
+  setBusy(false);
+  await renderLog(id);
+  const proto=location.protocol==='https:'?'wss':'ws';
+  const url=`${proto}://${location.host}${location.pathname.replace(/\/$/,'')}/ws/${encodeURIComponent(id)}`;
+  ws=new WebSocket(url);
+  ws.onopen=()=>{ /* ready */ };
+  ws.onmessage=ev=>onMsg(JSON.parse(ev.data));
+  ws.onerror=()=>{ add('system','Нет связи с сервером (WebSocket). Обнови страницу.'); setBusy(false); };
+  ws.onclose=()=>{ ws=null; if(scene) setBusy(false); };
+}
+function onMsg(m){
+  if(m.type==='hello') return renderSide(m.state);
+  if(m.type==='player') return addPlayer(m.text,m.turn);
+  if(m.type==='continue') return addPlayer('⏵ Продолжить',m.turn);
+  if(m.type==='reload'){ renderLog(scene.id).then(()=>setBusy(false)); return; }
+  if(m.type==='memory'){ add('mem',m.text); if(m.state) renderSide(m.state); return; }
+  if(m.type==='chunk'){
+    let d=segs[m.id];
+    if(!d){ d=segs[m.id]=add(m.kind,'',m.who,m.id); d._t=''; }
+    d._t+=m.delta; setText(d,m.kind,d._t,m.who);
+    chat.scrollTop=chat.scrollHeight; return;
+  }
+  if(m.type==='retract'){ segs[m.id]?.remove(); delete segs[m.id]; return; }
+  if(m.type==='replace'){
+    const d=segs[m.id]; if(!d) return;
+    for(const s of m.segments){ const n=document.createElement('div'); setText(n,s.kind,s.text,s.who); d.before(n); }
+    d.remove(); delete segs[m.id]; return;
+  }
+  if(m.type==='segment') return add(m.kind,m.text,m.who);
+  if(m.type==='turn_end'){
+    renderSide(m.state);
+    if(m.state) $('subtitle').textContent=m.state.rule_mode+' · ход '+m.state.turn;
+    const s=m.stats;
+    if(s.llm_calls&&s.llm_calls.length){
+      const t=document.createElement('div'); t.className='turnstat';
+      t.textContent=`ход ${s.turn} · ${s.wall_s} с · ${s.llm_calls.length} вызов. · кэш ${s.cache_n} / чтение ${s.prompt_n}`;
+      chat.appendChild(t);
+    }
+    setBusy(false); return;
+  }
+  if(m.type==='error'){ add('system','Ошибка: '+m.text); setBusy(false); }
+}
+function setBusy(b){
+  busy=b;
+  $('bSend').disabled=b; $('bCont').disabled=b;
+  $('busyBar').classList.toggle('on', b);
+}
+function send(){
+  const t=$('inp').value.trim(); if(!t||busy) return;
+  if(!ws||ws.readyState!==1){
+    add('system','Соединение ещё не готово. Подожди секунду или открой сцену снова.');
+    return;
+  }
+  ws.send(JSON.stringify({type:'input',text:t}));
+  $('inp').value=''; autosize($('inp')); setBusy(true);
+}
+function regen(){ if(busy||!ws||ws.readyState!==1) return; ws.send(JSON.stringify({type:'regenerate'})); setBusy(true); }
+async function saveSettings(){
+  const b={length_mult:+$('sMult').value, max_speaks:+$('sMax').value||null};
+  await fetch('api/scenes/'+encodeURIComponent(scene.id)+'/settings',{
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b)
+  });
+  $('sMultV').textContent=b.length_mult;
+}
+function cont(){ if(busy||!ws||ws.readyState!==1) return; ws.send(JSON.stringify({type:'continue'})); setBusy(true); }
+function sysCmd(){
+  const c=prompt('Команда Системы','статус');
+  if(c){ $('inp').value='Система, '+c; send(); }
+}
+function autosize(el){
+  el.style.height='44px';
+  el.style.height=Math.min(120, Math.max(44, el.scrollHeight))+'px';
+}
+$('inp').addEventListener('keydown', e=>{
+  if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); }
+});
+$('inp').addEventListener('input', e=>autosize(e.target));
+
+function bar(c,m,col){
+  return `<div class="bar"><i style="width:${m?Math.round(100*c/m):0}%;background:${col}"></i></div>`;
+}
+function renderSide(st){
+  if(!st) return;
+  const p=st.characters[st.player_id];
+  const se=st.settings||{length_mult:1};
+  let h=`<div class="side-head"><strong>Персонаж</strong>
+    <button class="ghost icon" onclick="closeSide()" title="Закрыть" style="width:36px;height:36px;min-height:36px">✕</button></div>`;
+  h+=`<div class="hint">Режим: ${esc(st.rule_mode)} · ход ${st.turn}</div>`;
+  h+=`<div class="stat-block"><div class="stat-name">${esc(p.name)}${p.is_player?' · вы':''} · ур. ${p.level}</div>`;
+  if(p.kind) h+=`<div class="hint">${esc(p.kind)}</div>`;
+  h+=`<div class="stat-row"><span>❤️ HP</span><span>${p.hp}/${p.max_hp}</span></div>${bar(p.hp,p.max_hp,'var(--hp)')}`;
+  h+=`<div class="stat-row"><span>🔷 MP</span><span>${p.mp}/${p.max_mp}</span></div>${bar(p.mp,p.max_mp,'var(--mp)')}`;
+  h+=`<div class="stat-row"><span>✨ EXP</span><span>${p.exp}/${p.exp_next}</span></div>${bar(p.exp,p.exp_next,'var(--xp)')}</div>`;
+  h+=`<div class="attrs">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
+
+  const abs=p.abilities||[];
+  const act=abs.filter(a=>a.kind==='active'), pas=abs.filter(a=>a.kind!=='active');
+  h+=`<h3>Способности</h3>`;
+  if(!abs.length) h+=`<div class="list-plain">—</div>`;
+  else {
+    if(act.length){
+      h+=`<div class="hint" style="margin:.2rem 0">Активные</div><div class="list-plain">${act.map(a=>{
+        const ex=[a.cost&&('цена '+a.cost),a.cooldown&&('кд '+a.cooldown)].filter(Boolean).join(', ');
+        return '⚡ '+esc(a.name)+(ex?' <span class="hint">('+esc(ex)+')</span>':'')+(a.description?' — '+esc(a.description):'');
+      }).join('<br>')}</div>`;
+    }
+    if(pas.length){
+      h+=`<div class="hint" style="margin:.35rem 0 .2rem">Пассивные</div><div class="list-plain">${pas.map(a=>
+        '◇ '+esc(a.name)+(a.description?' — '+esc(a.description):'')
+      ).join('<br>')}</div>`;
+    }
+  }
+  h+=`<h3>Инвентарь</h3><div class="list-plain">${(p.inventory||[]).map(i=>{
+    const mark=i.equipped?' <span class="eq">[экип.]</span>':'';
+    return esc(i.name)+(i.qty>1?' ×'+i.qty:'')+mark;
+  }).join('<br>')||'—'}</div>`;
+
+  const present=st.present.filter(i=>i!==st.player_id);
+  h+=`<h3>Противники · в сцене</h3>`;
+  if(!present.length) h+=`<div class="list-plain">Никого рядом</div>`;
+  else {
+    h+=`<div class="hint" style="margin-bottom:.35rem">${present.length} рядом · статы видны после осмотра</div>`;
+    h+= present.map(i=>{
+      const c=st.characters[i]||{};
+      const known=c.reveal||{};
+      const kind = known.kind ? (c.kind||'неизвестно') : 'неизвестно';
+      let block=`<div class="combat-box" style="margin-bottom:.4rem;background:rgba(120,140,160,.06);border-color:var(--line)">`;
+      block+=`<div><b>${esc(c.name||'?')}</b> · <span class="hint">${esc(kind)}</span></div>`;
+      if(known.attrs && c.attrs && Object.keys(c.attrs).length){
+        block+=`<div class="attrs" style="margin-top:.3rem">${Object.entries(c.attrs).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
+        if(c.hp!=null) block+=`<div class="hint">HP ${c.hp}/${c.max_hp}</div>`;
+      } else if(st.combat&&st.combat.active&&c.hp!=null){
+        block+=`<div class="hint">HP ${c.hp}/${c.max_hp} · характеристики скрыты</div>`;
+      } else {
+        block+=`<div class="hint">характеристики: неизвестно</div>`;
+      }
+      if(known.abilities){
+        const al=c.abilities||[];
+        block+=`<div class="hint" style="margin-top:.25rem">способности: ${al.length?al.map(a=>esc(a.name)).join(', '):'не видно'}</div>`;
+      } else {
+        block+=`<div class="hint">способности: неизвестно</div>`;
+      }
+      block+=`</div>`;
+      return block;
+    }).join('');
+  }
+
+  if(st.combat&&st.combat.active){
+    h+=`<h3>Бой · раунд ${st.combat.round}</h3><div class="combat-box">`;
+    h+=(st.combat.order||[]).map((o,i)=>{
+      const c=st.characters[o.id]||{};
+      const cur=i===st.combat.current?' cur':'';
+      const hp=c.hp!=null?` · HP ${c.hp}/${c.max_hp}`:'';
+      return `<div class="${cur.trim()}">${i===st.combat.current?'→ ':''}${esc(c.name||o.id)}${hp}</div>`;
+    }).join('');
+    h+=`</div>`;
+  }
+  const cond=p.conditions||[];
+  if(cond.length){
+    h+=`<h3>Состояния</h3><div class="list-plain">${cond.map(x=>esc(x.name)+` (${x.turns_left})`).join('<br>')}</div>`;
+  }
+  h+=`<h3>Память</h3><div class="hint">сводок ${st.summaries||0} · фактов ${st.facts||0}<br>архив до хода ${st.archived_turn||0}</div>`;
+  h+=`<h3>Настройки</h3>
+    <label>Длина ходов × <span id="sMultV">${se.length_mult}</span></label>
+    <input id="sMult" type="range" min="0.5" max="2" step="0.25" value="${se.length_mult}" onchange="saveSettings()">
+    <label>Макс. реплик NPC за ход</label>
+    <input id="sMax" type="number" min="1" max="10" placeholder="авто" value="${se.max_speaks||''}" onchange="saveSettings()">
+    <p class="hint" style="margin-top:.6rem">Осмотр: «Система, осмотри Имя»</p>`;
+  side.innerHTML=h;
+}
+
+view('vList'); loadList();
+}
+let sceneDraft=null;
+
+function showNew(){
+  view('vNew');
+  $('title').textContent='Новая сцена';
+  sceneDraft=null;
+  $('preview').style.display='none';
+  $('createForm').style.display='';
+  $('createPc').style.display='';
+  $('createNpcs').style.display='';
+  $('createActions').style.display='flex';
+  if(!$('npcs').children.length){
+    addNpc('Сильфа','Хозяйка таверны, торгует слухами');
+    addNpc('Борек','Хмурый наёмник у камина');
+  }
+}
+function addNpc(n='',d=''){
+  const el=document.createElement('div'); el.className='npc';
+  el.innerHTML=`<input class="nn" placeholder="Имя" value="${esc(n)}">
+    <label>Кратко (роль, черта)</label>
+    <textarea class="nd" rows="2" placeholder="Пара слов…">${esc(d)}</textarea>
+    <div class="row" style="margin-top:.35rem">
+      <button class="ghost icon" onclick="this.closest('.npc').remove()" title="Удалить">✕</button>
+    </div>`;
+  $('npcs').appendChild(el);
+}
+function collectBriefs(){
+  return [...document.querySelectorAll('.npc')].map(e=>({
+    name:e.querySelector('.nn').value.trim(),
+    brief:e.querySelector('.nd').value.trim()
+  })).filter(n=>n.name||n.brief);
+}
+function backToForm(){
+  sceneDraft=null;
+  $('preview').style.display='none';
+  $('createForm').style.display='';
+  $('createPc').style.display='';
+  $('createNpcs').style.display='';
+  $('createActions').style.display='flex';
+}
+function renderPreview(d){
+  const p=d.player||{};
+  const attrs=Object.entries(p.attrs||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ');
+  const abs=(p.abilities||[]).map(a=>esc(a.name)+' ('+(a.kind==='active'?'акт.':'пас.')+')').join(', ')||'—';
+  const inv=(p.inventory||[]).map(esc).join(', ')||'—';
+  let h=`<div class="hint" style="margin-bottom:.6rem">Проверьте и нажмите «Начать сцену». Атрибуты задал ИИ — править вручную не нужно.</div>`;
+  h+=`<b>${esc(d.title)}</b>`;
+  h+=`<div class="meta" style="margin:.35rem 0"><span class="badge ac">${esc($('nMode').value)}</span></div>`;
+  h+=`<div style="white-space:pre-wrap;font-size:.9rem;line-height:1.45;margin:.5rem 0 1rem;color:var(--tx)">${esc(d.setting)}</div>`;
+  h+=`<div class="card-title">Игрок: ${esc(p.name)}</div>`;
+  h+=`<div style="font-size:.9rem;margin-bottom:.35rem">${esc(p.description||'')}</div>`;
+  if(p.personality) h+=`<div class="hint">Характер: ${esc(p.personality)}</div>`;
+  h+=`<div class="attrs" style="margin:.4rem 0">${Object.entries(p.attrs||{}).map(([k,v])=>`<span><em>${esc(k)}</em> <b>${v}</b></span>`).join('')}</div>`;
+  h+=`<div class="hint">Способности: ${abs}</div>`;
+  h+=`<div class="hint" style="margin-bottom:.8rem">Набор: ${inv}</div>`;
+  h+=`<div class="card-title">NPC (${(d.npcs||[]).length})</div>`;
+  for(const n of (d.npcs||[])){
+    h+=`<div class="npc" style="margin:.4rem 0;padding:.55rem .65rem;border:1px solid var(--bd);border-radius:.5rem">`;
+    h+=`<b>${esc(n.name)}</b>`;
+    h+=`<div style="font-size:.88rem;margin-top:.25rem">${esc(n.description||'')}</div>`;
+    if(n.personality) h+=`<div class="hint">Характер: ${esc(n.personality)}</div>`;
+    if(n.secrets) h+=`<div class="hint">Тайна: ${esc(n.secrets)}</div>`;
+    h+=`</div>`;
+  }
+  if(d._stats) h+=`<div class="hint" style="margin-top:.6rem">Генерация: ${d._stats.wall_s||'?'}с · ${d._stats.predicted_n||'?'} ток.</div>`;
+  $('previewBody').innerHTML=h;
+}
+async function generateScene(){
+  const b=$('bGen'); b.disabled=true; b.textContent='Генерация…';
+  try{
+    const body={
+      title:$('nTitle').value.trim(),
+      premise:$('nPremise').value.trim(),
+      rule_mode:$('nMode').value,
+      player_name:$('pName').value.trim(),
+      player_brief:$('pBrief').value.trim(),
+      npcs:collectBriefs(),
+      npc_count:+($('nNpcCount').value||0)
+    };
+    const r=await fetch('api/scenes/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!r.ok) throw new Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j));
+    sceneDraft=j;
+    $('createForm').style.display='none';
+    $('createPc').style.display='none';
+    $('createNpcs').style.display='none';
+    $('createActions').style.display='none';
+    $('preview').style.display='';
+    renderPreview(j);
+  }catch(e){ alert('Генерация не удалась: '+e.message); }
+  finally{ b.disabled=false; b.textContent='Сгенерировать с ИИ'; }
+}
+async function confirmScene(){
+  if(!sceneDraft) return;
+  const b=$('bConfirm'); b.disabled=true; b.textContent='Создание…';
+  try{
+    const d=sceneDraft;
+    const body={
+      title:d.title, setting:d.setting, rule_mode:$('nMode').value,
+      player:{
+        name:d.player.name, description:d.player.description,
+        personality:d.player.personality||'', speech:d.player.speech||'',
+        kind:d.player.kind||'', attrs:d.player.attrs||{},
+        abilities:d.player.abilities||[],
+        inventory:d.player.inventory||[]
+      },
+      npcs:(d.npcs||[]).map(n=>({
+        name:n.name, description:n.description||'',
+        personality:n.personality||'', speech:n.speech||'',
+        secrets:n.secrets||'', kind:n.kind||'',
+        abilities:n.abilities||[], present:n.present!==false
       }))
     };
     const r=await fetch('api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

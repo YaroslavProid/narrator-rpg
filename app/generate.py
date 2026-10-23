@@ -3,7 +3,7 @@ Not on the play hot path — separate prompt, json_schema, no need for byte-stab
 from __future__ import annotations
 import json, re
 from . import mechanics as M
-from .models import ATTRS
+from .models import ATTRS, ATTR_MIGRATE
 
 SCENE_GEN_SCHEMA = {
     "type": "object",
@@ -13,20 +13,33 @@ SCENE_GEN_SCHEMA = {
         "setting": {"type": "string", "minLength": 80, "maxLength": 2500},
         "player": {
             "type": "object",
-            "required": ["name", "description", "personality", "attrs", "skills", "inventory"],
+            "required": ["name", "description", "personality", "attrs", "abilities", "inventory"],
             "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": 40},
                 "description": {"type": "string", "minLength": 20, "maxLength": 1200},
                 "personality": {"type": "string", "maxLength": 500},
                 "speech": {"type": "string", "maxLength": 400},
+                "kind": {"type": "string", "maxLength": 60},
                 "attrs": {
                     "type": "object",
                     "properties": {a: {"type": "integer"} for a in ATTRS},
                     "required": ATTRS,
                 },
-                "skills": {
-                    "type": "object",
-                    "additionalProperties": {"type": "integer"},
+                "abilities": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "kind"],
+                        "properties": {
+                            "name": {"type": "string", "minLength": 2, "maxLength": 40},
+                            "kind": {"type": "string", "enum": ["active", "passive"]},
+                            "description": {"type": "string", "maxLength": 200},
+                            "cost": {"type": "string", "maxLength": 40},
+                            "cooldown": {"type": "string", "maxLength": 40},
+                        },
+                    },
                 },
                 "inventory": {
                     "type": "array",
@@ -49,7 +62,23 @@ SCENE_GEN_SCHEMA = {
                     "personality": {"type": "string", "maxLength": 500},
                     "speech": {"type": "string", "maxLength": 400},
                     "secrets": {"type": "string", "maxLength": 400},
+                    "kind": {"type": "string", "maxLength": 60},
                     "present": {"type": "boolean"},
+                    "abilities": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "kind"],
+                            "properties": {
+                                "name": {"type": "string"},
+                                "kind": {"type": "string", "enum": ["active", "passive"]},
+                                "description": {"type": "string"},
+                                "cost": {"type": "string"},
+                                "cooldown": {"type": "string"},
+                            },
+                        },
+                    },
                 },
             },
         },
@@ -59,7 +88,6 @@ SCENE_GEN_SCHEMA = {
 
 def build_prompt(title: str, premise: str, rule_mode: str, player_name: str, player_brief: str,
                  npc_briefs: list[dict], npc_count: int) -> list[dict]:
-    skills = ", ".join(M.SKILLS)
     attrs = ", ".join(ATTRS)
     briefs = []
     for i, n in enumerate(npc_briefs or [], 1):
@@ -69,9 +97,9 @@ def build_prompt(title: str, premise: str, rule_mode: str, player_name: str, pla
     elif npc_count > len(briefs):
         briefs.append(f"(Дополни до {npc_count} NPC: придумай недостающих.)")
     mode_note = (
-        "Режим d20: атрибуты 8–16 (сумма около 72), навыки из списка 1–3 уровня, стартовый набор реалистичен."
+        "Режим d20: атрибуты 8–16 (сумма около 72), способности — именованные умения, стартовый набор реалистичен."
         if rule_mode == "d20" else
-        "Режим «система» (без кубиков): атрибуты 8–16, навыки из списка; инвентарь отражает роль, не «легендарный» хлам."
+        "Режим «система» (без кубиков): атрибуты 8–16; способности по роли; инвентарь без «легендарного» хлама."
     )
     user = f"""Сгенерируй сцену текстовой RPG целиком по-русски.
 
@@ -87,15 +115,17 @@ NPC (присутствуют в стартовой сцене):
 {chr(10).join(briefs) or '(без NPC — пустой список)'}
 
 Требования:
-- setting: 2–4 абзаца лора и стартовой ситуации (где мы, тон, крючок). Без мета-комментариев.
-- player: полная карточка. attrs — все из списка [{attrs}]. skills — только из [{skills}], 2–5 штук.
-- inventory: 4–8 предметов по роли и миру (оружие/инструменты/мелочь), без легендарных артефактов.
-- npcs: карточки с description, personality, speech (манеру), secrets (то, чего игрок не знает).
-- Не используй английский. Не спрашивай уточнений — сразу готовый JSON.
+- setting: 2–4 абзаца лора и стартовой ситуации. Без мета-комментариев.
+- player.attrs — все из списка [{attrs}] (не D&D-скиллы).
+- player.abilities — 2–5 ИМЕНОВАННЫХ способностей: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты.
+- inventory: 4–8 предметов по роли и миру.
+- npcs: description, personality, speech, secrets, kind (вид/тип: наёмник, дух, торговец…), опционально abilities.
+- Не используй английский. Сразу готовый JSON.
 """
     system = (
         "Ты — соавтор настольной текстовой RPG. Отвечаешь только одним JSON-объектом по схеме. "
-        "Пишешь по-русски, кратко и конкретно. Не морализируешь."
+        "Пишешь по-русски, кратко и конкретно. Не морализируешь. "
+        "Способности — это силы/умения, проверки — только по атрибутам."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -105,7 +135,7 @@ def _clamp_attrs(raw: dict) -> dict[str, int]:
     if not isinstance(raw, dict):
         return out
     for k, v in raw.items():
-        a = M.resolve_attr(str(k)) or (k if k in ATTRS else None)
+        a = M.resolve_attr(str(k)) or ATTR_MIGRATE.get(k) or (k if k in ATTRS else None)
         if not a:
             continue
         try:
@@ -115,19 +145,32 @@ def _clamp_attrs(raw: dict) -> dict[str, int]:
     return out
 
 
-def _clamp_skills(raw: dict) -> dict[str, int]:
-    out = {}
-    if not isinstance(raw, dict):
+def _abilities(raw) -> list[dict]:
+    out = []
+    if not isinstance(raw, list):
         return out
-    for k, v in raw.items():
-        s = M.resolve_skill(str(k))
-        if not s:
+    for x in raw:
+        if not isinstance(x, dict):
             continue
-        try:
-            out[s] = max(0, min(5, int(v)))
-        except (TypeError, ValueError):
-            pass
-    return dict(list(out.items())[:8])
+        name = re.sub(r"\s+", " ", str(x.get("name") or "").strip())[:40]
+        if not name:
+            continue
+        # reject old skill-style entries
+        if M.resolve_skill(name) and not x.get("kind"):
+            continue
+        kind = str(x.get("kind") or "passive").lower()
+        if kind not in ("active", "passive"):
+            kind = "passive"
+        out.append({
+            "name": name,
+            "kind": kind,
+            "description": str(x.get("description") or "").strip()[:200],
+            "cost": str(x.get("cost") or "").strip()[:40],
+            "cooldown": str(x.get("cooldown") or "").strip()[:40],
+        })
+        if len(out) >= 8:
+            break
+    return out
 
 
 def _inv(raw) -> list[str]:
@@ -154,13 +197,17 @@ def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
     if len(setting) < 40:
         setting = (setting + "\n" + (fallback_premise or "Мир ещё не описан подробно.")).strip()
     pl = data.get("player") or {}
+    abil = _abilities(pl.get("abilities") or [])
+    if not abil:
+        abil = [{"name": "Закалённый в боях", "kind": "passive", "description": "Легче переносит боль и страх.", "cost": "", "cooldown": ""}]
     player = {
         "name": (pl.get("name") or player_name or "Герой").strip()[:40],
         "description": (pl.get("description") or player_name or "Персонаж игрока.").strip()[:1200],
         "personality": (pl.get("personality") or "").strip()[:500],
         "speech": (pl.get("speech") or "").strip()[:400],
+        "kind": (pl.get("kind") or "искатель приключений").strip()[:60],
         "attrs": _clamp_attrs(pl.get("attrs") or {}),
-        "skills": _clamp_skills(pl.get("skills") or {}),
+        "abilities": abil,
         "inventory": _inv(pl.get("inventory") or []),
     }
     if not player["inventory"]:
@@ -178,6 +225,8 @@ def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
             "personality": (n.get("personality") or "").strip()[:500],
             "speech": (n.get("speech") or "").strip()[:400],
             "secrets": (n.get("secrets") or "").strip()[:400],
+            "kind": (n.get("kind") or "").strip()[:60],
+            "abilities": _abilities(n.get("abilities") or []),
             "present": bool(n.get("present", True)),
         })
     if npc_count > 0 and len(npcs) > npc_count:

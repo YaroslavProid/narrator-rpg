@@ -6,7 +6,9 @@ def test_parse():
     assert M.parse_system_command("Система, статус") == ("status", "статус")
     assert M.parse_system_command("система")[0] == "status"
     assert M.parse_system_command("Система: инвентарь")[0] == "inventory"
-    assert M.parse_system_command("*Система, навыки*")[0] == "skills"
+    assert M.parse_system_command("*Система, навыки*")[0] == "abilities"
+    assert M.parse_system_command("Система, способности")[0] == "abilities"
+    assert M.parse_system_command("Система, осмотри Сильфу")[0] == "inspect"
     assert M.parse_system_command("/help")[0] == "help"
     assert M.parse_system_command("Система, распредели Сила +1")[0] == "assign"
     assert M.parse_system_command("Системный сбой в голове") is None
@@ -17,9 +19,10 @@ def test_outputs():
     s = mk(); p = s.player
     st = M.run_system_command(s, "status", "")
     assert "СТАТУС" in st and "HP 20/20" in st and "Сильфа" in st
-    assert "Скрытность" in M.run_system_command(s, "skills", "")
+    ab = M.run_system_command(s, "abilities", "")
+    assert "СПОСОБНОСТИ" in ab and "Ночное зрение" in ab
     assert "Нож" in M.run_system_command(s, "inventory", "")
-    assert "статус" in M.run_system_command(s, "help", "")
+    assert "осмотр" in M.run_system_command(s, "help", "").lower() or "Осмотр" in M.run_system_command(s, "help", "") or "осмотри" in M.run_system_command(s, "help", "")
 
 
 def test_assign_points():

@@ -66,9 +66,9 @@ def ensure_item_stats(item: Item) -> Item:
 
 
 def attack_bonus(c: Character, weapon: Item | None) -> tuple[int, str]:
-    skill = "Стрельба" if weapon and any(k in weapon.name.lower() for k in ("лук", "арбалет", "пистол")) else "Ближний бой"
-    attr = M.SKILLS[skill]
-    return M.mod(c.attrs.get(attr, 10)) + c.skills.get(skill, 0), skill
+    attr = "Ловкость" if weapon and any(k in weapon.name.lower() for k in ("лук", "арбалет", "пистол", "ружь", "винтов")) else "Сила"
+    # Soft weight instead of hard mod + skill level
+    return M.soft_weight(c.attrs.get(attr, 10), 10), attr
 
 
 def start_combat(scene: Scene, ids: list[str]) -> str:
@@ -82,7 +82,7 @@ def start_combat(scene: Scene, ids: list[str]) -> str:
     for i in ids:
         c = scene.characters[i]
         die = M.rng(scene).randint(1, 20)
-        init = die + M.mod(c.attrs.get("Ловкость", 10))
+        init = die + M.soft_weight(c.attrs.get("Ловкость", 10), 10)
         order.append(Combatant(id=i, initiative=init))
     order.sort(key=lambda x: -x.initiative)
     scene.combat = Combat(active=True, round=1, order=order, current=0)

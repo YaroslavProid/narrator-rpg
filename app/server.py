@@ -37,13 +37,23 @@ def get_scene(sid):
     return state["scenes"][sid]
 
 
+class AbilityIn(BaseModel):
+    name: str
+    kind: str = "passive"  # active | passive
+    description: str = ""
+    cost: str = ""
+    cooldown: str = ""
+
+
 class PlayerIn(BaseModel):
     name: str
     description: str = ""
     personality: str = ""
     speech: str = ""
+    kind: str = ""
     attrs: dict[str, int] = {}
-    skills: dict[str, int] = {}
+    abilities: list[AbilityIn] = []
+    skills: dict[str, int] = {}  # legacy ignored
     inventory: list[str] = []
 
 
@@ -53,7 +63,9 @@ class NpcIn(BaseModel):
     personality: str = ""
     speech: str = ""
     secrets: str = ""
-    card: str = ""        # raw pasted card (JSON V2/V3 or text); overrides fields
+    kind: str = ""
+    abilities: list[AbilityIn] = []
+    card: str = ""
     present: bool = True
 
 
