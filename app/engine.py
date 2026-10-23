@@ -161,8 +161,12 @@ class TurnEngine:
             "", (order or "").strip(), flags=re.I,
         ).strip()
         if not rest and not audit:
-            # bare «Система, директор» → audit
-            audit = True
+            # bare «Система, директор» → short hello/chat, not forced audit
+            rest = (
+                "Привет. Коротко представься как Директор и скажи, чем можешь помочь "
+                "(совет по сюжету/тону, правки карточек, подсказка рассказчику). "
+                "Правок без просьбы не делай."
+            )
         try:
             result = await D.run_director(self.llm, scene, rest, audit=audit, seed=self.seed(scene, 77))
         except Exception as e:
@@ -560,8 +564,15 @@ class TurnEngine:
         mems = await self.retrieve(scene, (text or "") + " " + last_narr, scene.player_id, config.RETRIEVE_K, last_narr)
         scene.memory_injected += [f"{m['id']}|{scene.turn}" for m in mems]
         mem_lines = [f"(ход {m['turn']}) {m['text'][:220]}" for m in mems]
+        # one-shot director hint for narrator (consumed this turn)
+        dnote = (getattr(scene, "director_note", None) or "").strip()
+        if dnote:
+            scene.director_note = ""
+        turn_hint = budget.hint
+        if dnote:
+            turn_hint = (turn_hint + " " if turn_hint else "") + f"[ЗАМЕТКА ДИРЕКТОРА] {dnote}"
         scene.turns.append({"role": "user", "content": P.player_message(scene, M.state_line(scene), text,
-                                                                         hint=budget.hint, memories=mem_lines)})
+                                                                         hint=turn_hint, memories=mem_lines)})
         transcript = []
         steps = 0; speaks = 0
         while steps < budget.max_steps:

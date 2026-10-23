@@ -198,6 +198,7 @@ class Scene(BaseModel):
     snapshots: list[dict] = []
     combat: Combat = Combat()
     director_log: list[str] = []
+    director_note: str = ""  # one-shot hint for narrator (from Director chat)
     regen: int = 0
     version: int = 4
 

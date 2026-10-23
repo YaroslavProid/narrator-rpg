@@ -579,9 +579,12 @@ menu.onclick = async e => {
 
 $('#bDir').onclick = () => {
   const t = $('#dirInp').value.trim();
-  if (!t) { $('#dirInp').focus(); return toast('Напишите поручение Директору', true, 2500); }
+  if (!t) { $('#dirInp').focus(); return toast('Напишите Директору — совет, правку или просто вопрос', true, 2800); }
   $('#dirInp').value = ''; closeSheet(); send('Система, директор ' + t);
 };
+$('#dirInp') && ($('#dirInp').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#bDir').click(); }
+});
 $('#bAudit').onclick = () => { closeSheet(); send('Система, проверь карточки'); };
 
 let setT = null;
@@ -691,7 +694,14 @@ function renderSheet(state) {
 
   // ---- директор ----
   const dl = state.director_log || [];
-  $('#dirLog').innerHTML = dl.length ? dl.slice().reverse().map(x => `<li>${esc(x)}</li>`).join('') : '<li class="sub">Поручений ещё не было.</li>';
+  $('#dirLog').innerHTML = dl.length
+    ? dl.slice().reverse().map(x => {
+        const isDir = /^Директор:/i.test(x);
+        const isPl = /^Игрок:/i.test(x);
+        const cls = isDir ? 'dir-me' : (isPl ? 'dir-you' : '');
+        return `<li class="${cls}">${esc(x)}</li>`;
+      }).join('')
+    : '<li class="sub">Пока пусто — можно просто поздороваться или спросить совет, без правок.</li>';
 
   // ---- настройки (не трогаем поле, которое сейчас правят) ----
   const se = state.settings || {};

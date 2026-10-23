@@ -1,7 +1,7 @@
-"""Director: one-shot LLM that patches character cards and scene fields when asked.
+"""Director: chat + optional card/scene patches (Talemate-style).
 
-Not on the play hot path — separate prompt + json_schema. After apply, rebuild system_prompt
-(invalidates prompt cache for the fixed prefix; accepted trade-off).
+Not on the play hot path — separate prompt + json_schema. Reply is always required;
+patches only when needed. After apply, rebuild system_prompt if cards/setting changed.
 """
 from __future__ import annotations
 import json, re
@@ -12,9 +12,11 @@ from .prompt import render
 
 DIRECTOR_SCHEMA = {
     "type": "object",
-    "required": ["summary", "character_patches", "scene_patch"],
+    "required": ["reply", "summary"],
     "properties": {
-        "summary": {"type": "string", "minLength": 5, "maxLength": 400},
+        "reply": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "summary": {"type": "string", "minLength": 3, "maxLength": 400},
+        "narrator_note": {"type": "string", "maxLength": 400},
         "character_patches": {
             "type": "array",
             "maxItems": 8,
@@ -149,32 +151,53 @@ def build_director_prompt(scene: Scene, order: str, *, audit: bool = False) -> l
     hints = incomplete_hints(scene)
     hint_block = ""
     if hints:
-        hint_block = "Замеченные несостыковки (исправь, если уместно):\n- " + "\n- ".join(hints) + "\n\n"
+        hint_block = (
+            "Замеченные несостыковки (чини только если уместно или тебя просят):\n- "
+            + "\n- ".join(hints) + "\n\n"
+        )
     if audit and not (order or "").strip():
         order = (
-            "Проверь все карточки и сцену: дополни пустой инвентарь по роли, уточни вид/описание/способности, "
-            "убери противоречия. Не меняй сюжет без нужды."
+            "Проверь карточки и сцену: дополни пустой инвентарь по роли, уточни вид/описание/способности, "
+            "убери противоречия. Кратко расскажи игроку, что нашла. Не меняй сюжет без нужды."
         )
+    chat = scene.director_log[-8:] if getattr(scene, "director_log", None) else []
+    chat_block = ""
+    if chat:
+        chat_block = "Недавний разговор с игроком:\n" + "\n".join(f"- {x}" for x in chat) + "\n\n"
+    recent = []
+    for e in scene.log[-12:]:
+        if e.kind in ("player", "speech", "narration", "system"):
+            who = e.who or ("Рассказчик" if e.kind == "narration" else e.kind)
+            recent.append(f"{who}: {(e.text or '')[:180]}")
+    recent_block = ""
+    if recent:
+        recent_block = "Хвост сцены (для контекста):\n" + "\n".join(recent) + "\n\n"
     attrs = ", ".join(ATTRS)
-    user = f"""Ты — Директор текстовой RPG. По запросу игрока (или аудиту) внеси точечные правки карточек и сцены.
-
-{scene_brief(scene)}
-
-{hint_block}Запрос: {order.strip() or 'исправь несостыковки карточек'}
-
-Правила ответа — один JSON по схеме:
-- character_patches: правки по имени who (как в карточках). Меняй только нужные поля.
-- abilities_set заменяет весь список способностей; abilities_add — добавляет.
-- inventory_add / inventory_remove — предметы (без легендарного хлама).
-- attrs — только из [{attrs}], значения 3–18; небольшие сдвиги.
-- scene_patch: title/setting осторожно; present_add/present_remove — имена.
-- Не удаляй персонажа игрока из сцены. Не пиши код. Только по-русски.
-- summary: 1–2 предложения, что сделал.
-Если правок не нужно — пустые массивы/объект и summary «правок не требуется».
-"""
+    msg = (order or "").strip() or "просто поздоровайся и кратко скажи, чем можешь помочь"
+    user = "\n".join([
+        "Ты — Директор текстовой RPG (как в Talemate): собеседник и режиссёр, не авто-редактор.",
+        "",
+        "С тобой можно просто поговорить: спросить совет по сюжету, тону, персонажам, сложности;",
+        "попросить вмешаться в ответы рассказчика; попросить поменять карточку.",
+        "Ты НЕ обязан каждый раз что-то править. Если запрос — разговор или совет, ответь в reply",
+        "и оставь character_patches/scene_patch пустыми.",
+        "Правки карточек/сцены — только когда игрок просит ИЛИ при аудите с явной дырой.",
+        "",
+        scene_brief(scene),
+        "",
+        f"{hint_block}{chat_block}{recent_block}Сообщение игрока: {msg}",
+        "",
+        "Ответ — один JSON:",
+        "- reply (обязательно): живой ответ игроку по-русски, 2–8 предложений. Можно советовать, спорить, предлагать варианты.",
+        "- summary: очень кратко для лога (что ответила / что правила).",
+        "- narrator_note (опционально): одноразовая мягкая подсказка рассказчику на СЛЕДУЮЩИЙ ход (тон, акцент, чего избегать). Пусто, если не нужно.",
+        "- character_patches / scene_patch: только при реальных правках; иначе [] и {}.",
+        f"- abilities_set заменяет список; abilities_add добавляет; inventory_add/remove; attrs из [{attrs}] (3–18).",
+        "- Не удаляй персонажа игрока из сцены. Не пиши код.",
+    ])
     system = (
-        "Ты Директор: правишь карточки и сеттинг для согласованности. "
-        "Отвечаешь одним JSON. Кратко, по делу, по-русски."
+        "Ты Директор: сначала общаешься с игроком (reply), правки — по необходимости. "
+        "Отвечаешь одним JSON. По-русски, по делу, без обязательных правок."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -221,8 +244,8 @@ def _add_item(c: Character, name: str, msgs: list[str]):
     msgs.append(f"{c.name}: +«{t}»")
 
 
-def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool]:
-    """Apply validated director JSON. Returns (summary_text, action_lines, rebuilt_prompt)."""
+def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool, str]:
+    """Apply validated director JSON. Returns (summary, actions, rebuilt_prompt, reply)."""
     if not isinstance(data, dict):
         raise ValueError("патч директора не объект")
     actions: list[str] = []
@@ -348,35 +371,45 @@ def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool]:
     if need_rebuild:
         scene.system_prompt = P.build_system(scene)
 
+    reply = str(data.get("reply") or "").strip()[:1200]
+    note = str(data.get("narrator_note") or "").strip()[:400]
+    if note:
+        scene.director_note = note
+        actions.append("заметка рассказчику на следующий ход")
     summary = str(data.get("summary") or "").strip()[:400] or (
-        "Директор внёс правки." if actions else "Правок не требуется."
+        "Директор внёс правки." if actions else (reply[:120] if reply else "без правок")
     )
-    if not actions:
-        actions.append("изменений нет")
-    return summary, actions, need_rebuild
+    return summary, actions, need_rebuild, reply
 
 
 async def run_director(llm, scene: Scene, order: str, *, audit: bool = False, seed: int = -1) -> dict:
-    """Call LLM once and apply patches. Returns dict with summary, actions, rebuilt, stats."""
+    """Call LLM once; chat reply + optional patches."""
     msgs = build_director_prompt(scene, order, audit=audit)
     prompt = render(msgs[0]["content"], [{"role": "user", "content": msgs[1]["content"]}], open_model="")
     content, stats = await llm.complete(
-        prompt, n_predict=1400, stop=["<turn|>", "<|turn>"],
-        temperature=0.4, seed=seed, json_schema=DIRECTOR_SCHEMA,
+        prompt, n_predict=1600, stop=["<turn|>", "<|turn>"],
+        temperature=0.55, seed=seed, json_schema=DIRECTOR_SCHEMA,
     )
     data = parse_director_json(content)
-    summary, actions, rebuilt = apply_patches(scene, data)
-    line = "🎬 " + summary
-    if actions and actions != ["изменений нет"]:
-        line += "\n" + "\n".join(f"· {a}" for a in actions[:20])
+    summary, actions, rebuilt, reply = apply_patches(scene, data)
+    if not reply:
+        reply = summary
+    player_line = (order or "").strip() or ("(аудит карточек)" if audit else "(открыл Директора)")
+    scene.director_log = (getattr(scene, "director_log", None) or [])[-16:]
+    scene.director_log.append(f"Игрок: {player_line[:240]}")
+    scene.director_log.append(f"Директор: {reply[:400]}")
+    parts = ["🎬 " + reply]
+    if actions:
+        parts.append("\n".join(f"· {a}" for a in actions[:20]))
+    elif summary and summary not in reply:
+        parts.append("· " + summary)
     if rebuilt:
-        line += "\n(системный промпт пересобран — кэш префикса сбросится на следующем ходе)"
-    # keep short log on scene
-    scene.director_log = (getattr(scene, "director_log", None) or [])[-19:] + [summary]
+        parts.append("(системный промпт пересобран — кэш префикса обновится на следующем ходе)")
     return {
         "summary": summary,
+        "reply": reply,
         "actions": actions,
         "rebuilt": rebuilt,
-        "text": line,
+        "text": "\n".join(parts),
         "stats": {k: stats.get(k) for k in ("wall_s", "prompt_n", "cache_n", "predicted_n")},
     }

@@ -26,7 +26,8 @@ def test_apply_inventory_and_kind():
     s = mk()
     sil = s.characters[[k for k in s.characters if "silfa" in k or s.characters[k].name == "Сильфа"][0]]
     assert not sil.inventory
-    summary, actions, rebuilt = D.apply_patches(s, {
+    summary, actions, rebuilt, reply = D.apply_patches(s, {
+        "reply": "Выдала Сильфе лук и стрелы.",
         "summary": "Выдала Сильфе лук.",
         "character_patches": [{
             "who": "Сильфа",
@@ -45,7 +46,8 @@ def test_apply_inventory_and_kind():
 
 def test_apply_rejects_legendary_and_player_leave():
     s = mk()
-    summary, actions, _ = D.apply_patches(s, {
+    summary, actions, _, reply = D.apply_patches(s, {
+        "reply": "Отклонила легендарку и уход игрока.",
         "summary": "попытка",
         "character_patches": [{
             "who": "Ярен",
@@ -63,6 +65,7 @@ def test_apply_rejects_legendary_and_player_leave():
 def test_attr_clamp():
     s = mk()
     D.apply_patches(s, {
+        "reply": "Правила атрибуты.",
         "summary": "статы",
         "character_patches": [{"who": "Ярен", "attrs": {"Сила": 99, "Ловкость": 1}}],
         "scene_patch": {},
@@ -75,3 +78,31 @@ def test_parse_director_command():
     from app import mechanics as M
     assert M.parse_system_command("Система, директор дай лук Сильфе")[0] == "director"
     assert M.parse_system_command("Система, проверь карточки")[0] == "director_audit"
+
+
+def test_chat_only_no_patches():
+    s = mk()
+    before = {k: (c.kind, len(c.inventory)) for k, c in s.characters.items()}
+    summary, actions, rebuilt, reply = D.apply_patches(s, {
+        "reply": "Можно усилить напряжение: пусть стража услышит шорох.",
+        "summary": "совет без правок",
+        "character_patches": [],
+        "scene_patch": {},
+    })
+    assert reply.startswith("Можно")
+    assert not rebuilt
+    assert before == {k: (c.kind, len(c.inventory)) for k, c in s.characters.items()}
+
+
+def test_narrator_note_one_shot():
+    s = mk()
+    assert not getattr(s, "director_note", "")
+    _, actions, _, _ = D.apply_patches(s, {
+        "reply": "Ок, подскажу рассказчику.",
+        "summary": "заметка",
+        "narrator_note": "Сильфа насторожена, без длинных монологов.",
+        "character_patches": [],
+        "scene_patch": {},
+    })
+    assert "заметка рассказчику" in " ".join(actions)
+    assert "Сильфа насторожена" in s.director_note
