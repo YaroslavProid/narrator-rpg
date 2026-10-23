@@ -433,6 +433,10 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
         return None
     r = re.sub(r"[,:.!?*»\"]", " ", rest).strip()
     if r == "" or any(k in r for k in ("стат", "status", "характ", "stats", "показат")): return "status", r
+    if any(k in r for k in ("директор", "director", "режиссёр", "режиссер")): return "director", r
+    if any(k in r for k in ("провер", "аудит", "audit", "карточки")) and any(
+            k in r for k in ("карточки", "карт", "провер", "аудит", "audit", "несостык")):
+        return "director_audit", r
     if any(k in r for k in ("осмотр", "изуч", "inspect", "observe", "разгляд", "рассмотр")): return "inspect", r
     if any(k in r for k in ("навык", "скил", "skill", "умени", "способн", "абил")) and "распредел" not in r and "влож" not in r:
         return "abilities", r
@@ -496,6 +500,8 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             for a in pas:
                 lines.append(f"- {a.name}" + (f" — {a.description}" if a.description else ""))
         return "### ⟦ СИСТЕМА · СПОСОБНОСТИ ⟧\n" + "\n".join(lines)
+    if cmd in ("director", "director_audit"):
+        return "__DIRECTOR__"  # handled async in engine
     if cmd == "inspect":
         return inspect_target(scene, rest)
     if cmd == "inventory":
@@ -546,6 +552,7 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
     return ("### ⟦ СИСТЕМА · ПОМОЩЬ ⟧\n"
             "- «Система, статус» / способности / инвентарь / состояния / бой\n"
             "- «Система, осмотри Имя» — разведка противника\n"
+            "- «Система, директор …» / «Система, проверь карточки»\n"
             "- «Система, экипируй Короткий меч» / «сними Щит»\n"
             "- «Система, используй Зелье лечения» / «дай Нож Сильфе»\n"
             "- «Система, распредели Сила +1»\n"

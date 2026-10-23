@@ -197,6 +197,7 @@ class Scene(BaseModel):
     memory_injected: list[str] = []
     snapshots: list[dict] = []
     combat: Combat = Combat()
+    director_log: list[str] = []
     regen: int = 0
     version: int = 4
 

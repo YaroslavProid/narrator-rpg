@@ -112,6 +112,7 @@ class TurnEngine:
         return {"player_id": scene.player_id, "present": scene.present, "rule_mode": scene.rule_mode, "turn": scene.turn,
                 "settings": scene.settings.model_dump(), "summaries": len(scene.summaries), "facts": len(scene.facts),
                 "archived_turn": scene.archived_turn, "combat": scene.combat.model_dump(),
+                "director_log": list(getattr(scene, "director_log", []) or [])[-8:],
                 "characters": chars}
 
     def prompt(self, scene, open_model=None, extra=None):
@@ -132,8 +133,10 @@ class TurnEngine:
             if text is not None:
                 cmd = M.parse_system_command(text)
                 if cmd:
-                    out = M.run_system_command(scene, *cmd)
                     await emit({"type": "player", "text": text})
+                    if cmd[0] in ("director", "director_audit"):
+                        return await self._director(scene, cmd[1], emit, audit=(cmd[0] == "director_audit"))
+                    out = M.run_system_command(scene, *cmd)
                     await self.sys_msg(emit, scene, out)
                     scene.log.append(Event(turn=scene.turn, kind="system", who="Система", text=out, witnesses=[scene.player_id]))
                     store.save_scene(scene)
@@ -141,6 +144,42 @@ class TurnEngine:
                     await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
                     return st
             return await self._turn(scene, text, emit)
+
+    async def _director(self, scene: Scene, order: str, emit, *, audit: bool = False) -> dict:
+        """One-shot Director LLM call; apply card/scene patches; rebuild system_prompt if needed."""
+        from . import director as D
+        # strip leading keywords from rest
+        rest = re.sub(
+            r"^(директор|director|режиссёр|режиссер|проверь\s+карточки|проверить\s+карточки|аудит)\s*[,:]?\s*",
+            "", (order or "").strip(), flags=re.I,
+        ).strip()
+        if not rest and not audit:
+            # bare «Система, директор» → audit
+            audit = True
+        try:
+            result = await D.run_director(self.llm, scene, rest, audit=audit, seed=self.seed(scene, 77))
+        except Exception as e:
+            err = f"⟦ ДИРЕКТОР ⟧ ошибка: {type(e).__name__}: {e}"
+            await self.sys_msg(emit, scene, err)
+            scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=err, witnesses=[scene.player_id]))
+            store.save_scene(scene)
+            st = {"turn": scene.turn, "command": "director", "error": str(e), "llm_calls": [], "wall_s": 0}
+            await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
+            return st
+        text = "### ⟦ ДИРЕКТОР ⟧\n" + result["text"]
+        await self.sys_msg(emit, scene, text)
+        scene.log.append(Event(turn=scene.turn, kind="system", who="Директор", text=text, witnesses=[scene.player_id]))
+        store.save_scene(scene)
+        # re-warm cache in background if prefix rebuilt
+        if result.get("rebuilt"):
+            try:
+                await self.llm.warm(self.prompt(scene))
+            except Exception:
+                pass
+        st = {"turn": scene.turn, "command": "director", "llm_calls": [result.get("stats") or {}],
+              "wall_s": (result.get("stats") or {}).get("wall_s"), "rebuilt": result.get("rebuilt")}
+        await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
+        return st
 
     async def warm(self, scene):
         async with self.lock:
