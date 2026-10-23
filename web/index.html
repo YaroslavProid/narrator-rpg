@@ -127,7 +127,9 @@ function renderSide(st){if(!st)return;const p=st.characters[st.player_id];let h=
   h+=ch(p)+`EXP ${p.exp}/${p.exp_next}${bar(p.exp,p.exp_next,'#cb5')}<div class="hint">${Object.entries(p.attrs).map(([k,v])=>k+' '+v).join(' · ')}</div>`;
   h+=`<h3>Навыки</h3>${Object.entries(p.skills).map(([k,v])=>esc(k)+' '+v).join('<br>')||'—'}<h3>Инвентарь</h3>${p.inventory.map(i=>esc(i.name)+(i.qty>1?' ×'+i.qty:'')).join('<br>')||'—'}`;
   h+='<h3>В сцене</h3>'+st.present.filter(i=>i!=st.player_id).map(i=>{const c=st.characters[i];return esc(c.name)+` <span class="hint">HP ${c.hp}/${c.max_hp}</span>`}).join('<br>');
-  const se=st.settings||{length_mult:1};h+=`<h3>Память</h3><div class="hint">сводок ${st.summaries||0} · фактов ${st.facts||0} · архив до хода ${st.archived_turn||0}</div>`;
+  const se=st.settings||{length_mult:1};if(st.combat&&st.combat.active){h+=`<h3>Бой · раунд ${st.combat.round}</h3>`+(st.combat.order||[]).map((o,i)=>{const c=st.characters[o.id];return (i===st.combat.current?'→ ':'')+esc(c.name)+` HP ${c.hp}/${c.max_hp}`}).join('<br>')}
+  const cond=(p.conditions||[]);if(cond.length)h+=`<h3>Состояния</h3>`+cond.map(x=>esc(x.name)+` (${x.turns_left})`).join('<br>');
+  h+=`<h3>Память</h3><div class="hint">сводок ${st.summaries||0} · фактов ${st.facts||0} · архив до хода ${st.archived_turn||0}</div>`;
   h+=`<h3>Настройки</h3><label>Длина ходов ×<span id="sMultV">${se.length_mult}</span></label><input id="sMult" type="range" min="0.5" max="2" step="0.25" value="${se.length_mult}" onchange="saveSettings()">
   <label>Макс. реплик NPC за ход (пусто = авто)</label><input id="sMax" type="number" min="1" max="10" value="${se.max_speaks||''}" onchange="saveSettings()">`;
   side.innerHTML=h}

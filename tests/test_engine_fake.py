@@ -14,6 +14,9 @@ class FakeLLM:
     async def complete(self, prompt, n_predict, stop=None, on_delta=None, seed=-1, temperature=None, **kw):
         self.prompts.append(prompt); self.bodies.append(kw)
         if not self.outs and "json_schema" in kw:
+            schema = kw["json_schema"]
+            if schema.get("required") == ["blocks"]:
+                return '{"blocks": [{"from_turn": 1, "to_turn": 2, "summary": "Сводка по умолчанию о событиях.", "facts": []}]}', {"prompt_n": 1, "cache_n": 0, "predicted_n": 5}
             return '{"summary": "Сводка по умолчанию о событиях.", "facts": []}', {"prompt_n": 1, "cache_n": 0, "predicted_n": 5}
         text, sw = self.outs.pop(0)
         if on_delta: await on_delta(text)

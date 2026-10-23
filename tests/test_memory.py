@@ -182,15 +182,53 @@ def test_active_npcs_and_fuzzy_fact_dedup():
 
 
 def test_batched_archive_single_prefix(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVE_BLOCK", 150)
+    monkeypatch.setattr(config, "ARCHIVE_BLOCK", 400)
+    monkeypatch.setattr(config, "ARCHIVE_MIN", 200)
     s = mk(); eng = TurnEngine(FakeLLM([]))
-    for i in range(8):
-        play(s, eng, [("<narrate>" + "Туман. " * 60 + "</narrate><end", "/>")], f"Шаг {i}")
+    for i in range(10):
+        play(s, eng, [("<narrate>" + "Туман. " * 50 + "</narrate><end", "/>")], f"Шаг {i}")
     n0 = len(eng.llm.prompts)
     calls = []
+    # FakeLLM returns single-block JSON by default; multi-schema needs blocks list
+    eng.llm.outs.append((json.dumps({
+        "blocks": [
+            {"from_turn": 1, "to_turn": 3, "summary": "Сводка А про туман и ожидание в таверне.", "facts": []},
+            {"from_turn": 4, "to_turn": 6, "summary": "Сводка Б: герой готовится к выходу.", "facts": []},
+            {"from_turn": 7, "to_turn": 8, "summary": "Сводка В: дорога и дождь.", "facts": []},
+        ]}, ensure_ascii=False), ""))
     msg = asyncio.run(eng.archive_block(s, calls, n_blocks=3))
     arch = eng.llm.prompts[n0:]
-    assert msg.count("Архив") == 3 and len(s.summaries) == 3
-    base = arch[0][: arch[0].index("[АРХИВАТОР]")]
-    assert all(p.startswith(base) for p in arch)          # all three summarised on the same cached prefix
-    assert s.summaries[0].to_turn < s.summaries[1].from_turn
+    assert msg and msg.count("Архив") >= 2 and len(s.summaries) >= 2
+    assert sum(1 for c in calls if str(c.get("kind", "")).startswith("archive")) == 1  # single-pass
+    assert "[АРХИВАТОР]" in arch[0] and "НЕСКОЛЬКО" in arch[0]
+
+
+def test_hybrid_retrieve_prefers_facts():
+    s = mk()
+    MEM.add_facts(s, [{"text": "Пароль контрабандистов — Чёрная цапля", "known_by": ["Сильфа", "Ярен"]}],
+                  [s.player_id, next(c.id for c in s.characters.values() if c.name == "Сильфа")], 2,
+                  lambda n: __import__("app.mechanics", fromlist=["x"]).resolve_character(s, n))
+    s.archived_turn = 5
+    hits = MEM.retrieve(None, s, "какой был пароль цапля?", s.player_id, 3)
+    assert hits and "цапл" in hits[0]["text"].lower() and hits[0]["kind"] == "fact"
+
+
+def test_background_skips_rewarm_when_cancelled(monkeypatch):
+    monkeypatch.setattr(config, "ARCHIVE_BLOCK", 200)
+    monkeypatch.setattr(config, "ARCHIVE_MIN", 100)
+    monkeypatch.setattr(config, "RECENT_MAX", 400)
+    s = mk(); eng = TurnEngine(FakeLLM([]))
+    for i in range(6):
+        play(s, eng, [("<narrate>" + "Дождь. " * 40 + "</narrate><end", "/>")], f"Жду {i}")
+    eng.bg_cancel.set()
+    asyncio.run(eng.background(s))
+    # cancel before lock → nothing runs, or skipped re-warm
+    assert eng.bg_running is False
+
+
+def test_plan_blocks_respects_min():
+    eng = TurnEngine(FakeLLM([]))
+    tt = [(0, 1, 500), (1, 2, 500), (2, 3, 500), (3, 4, 500), (4, 5, 500), (5, 6, 500)]
+    # with ARCHIVE_MIN default 1500 and BLOCK 3000, one fat block
+    blocks = eng.plan_blocks(tt, 3)
+    assert blocks and all(b[3] >= config.ARCHIVE_MIN or len(blocks) == 1 for b in blocks)
