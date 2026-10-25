@@ -8,6 +8,8 @@ License: AGPL-3.0 (see LICENSE). Concepts of the «Система» module porte
     .venv\Scripts\python.exe -m pip install -r requirements.txt
 
 ## Run (Phase 1 MVP)
+    start-narrator.cmd          # one click: starts llama-server if needed (LLAMA_START, default
+                                # C:\games\llama.cpp\start-gemma26.cmd), waits for the model, runs the app, opens the browser
     run-narrator.cmd            # http://0.0.0.0:8082 (same port as Talemate - don't run both)
     run-narrator.cmd 8090       # other port;  2nd arg = host, e.g. run-narrator.cmd 8090 127.0.0.1
 All settings live in `app/config.py` and can be overridden with env vars.

@@ -623,8 +623,8 @@ class TurnEngine:
             stem = c.name.lower()[: max(3, len(c.name) - 2)]
             if stem in low:
                 if len(M.party_ids(scene)) >= config.PARTY_MAX:
-                    return f"[ОТРЯД] Игрок зовёт {c.name}, но отряд полон ({config.PARTY_MAX}) — {c.name} не может вступить."
-                return (f"[ОТРЯД] Игрок зовёт {c.name} в отряд. Реши по характеру {c.name}. Если соглашается — "
+                    return f"[ОТРЯД] Игрок зовёт в отряд: {c.name}. Но отряд полон ({config.PARTY_MAX}) — {c.name} не может вступить."
+                return (f"[ОТРЯД] Игрок зовёт в отряд: {c.name}. Реши по характеру персонажа. Если соглашается — "
                         f"ОБЯЗАТЕЛЬНО поставь <join who=\"{c.name}\"/> сразу после ответа, иначе в отряд не попадёт. "
                         f"Если отказывается — тег не ставь.")
         return ""
@@ -972,7 +972,7 @@ class TurnEngine:
                 transcript.append({"kind": "system", "text": msg})
                 self.log(scene, "system", "⟦ ОТРЯД ⟧ " + msg, "Система")
                 self.mark_active(scene, c.id)
-                return msg + (" Опиши, как он присоединяется." if tag.name == "join" else " Опиши уход.")
+                return msg + (f" Опиши, как {c.name} присоединяется." if tag.name == "join" else f" Опиши, как {c.name} уходит.")
             return msg + (" Покажи это в повествовании." if tag.name == "join" else "")
         if tag.name == "leave":
             c = M.resolve_character(scene, a.get("who", ""), only_present=True)
