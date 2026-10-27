@@ -260,7 +260,7 @@ def foe_turn(scene: Scene, foe: Character) -> dict:
     tgt = pick_target(scene, foe)
     if tgt is None:
         return {"text": f"{foe.name} не находит цели.", "msgs": [], "brief": f"{foe.name} не находит цели"}
-    if any(x.name == "оглушение" for x in foe.conditions):
+    if consume_stun(foe):
         return {"text": f"{foe.name} оглушён и пропускает ход.", "msgs": [], "brief": f"{foe.name} оглушён и пропускает ход"}
     spells = [a for a in foe.abilities if a.kind == "active" and a.effect == "damage" and foe.mp >= ability_mp(a)]
     if spells and M.rng(scene).random() < 0.34:
@@ -284,33 +284,67 @@ def step(scene: Scene) -> Character | None:
     cb = scene.combat
     if not cb.active or not cb.order:
         return None
+    cb.awaiting = ""                  # a new turn: nobody waits for advice until run_foes stops on a companion
     for _ in range(len(cb.order) + 1):
         cb.current += 1
         if cb.current >= len(cb.order):
             cb.current = 0; cb.round += 1
-            tick_conditions(scene)
+            tick = tick_conditions(scene)
+            cb = scene.combat         # a fall at the round's end may have finished the fight (a fresh Combat)
+            if tick:
+                cb.notes += tick.split("\n")
+            if not cb.active or not cb.order:
+                return None
+        cb.current = min(cb.current, len(cb.order) - 1)
         c = scene.characters.get(cb.order[cb.current].id)
         if c and c.hp > 0:
             return c
     return None
 
 
+def drain_notes(scene: Scene) -> list[dict]:
+    """Round-end events step() collected (bleeding, falls, conditions wearing off), shown like a foe's action."""
+    cb = scene.combat
+    notes, cb.notes = [n for n in cb.notes if n], []
+    return [{"text": "\n".join(notes), "brief": "; ".join(notes)}] if notes else []
+
+
+def consume_stun(c: Character) -> bool:
+    """A stun is spent on the stunned one's own turn, not per round: True when this turn is lost."""
+    cond = next((x for x in c.conditions if x.name == "оглушение"), None)
+    if cond is None:
+        return False
+    cond.turns_left -= 1
+    if cond.turns_left <= 0:
+        c.conditions.remove(cond)
+    return True
+
+
+def _waits_turn(scene: Scene, c: Character) -> bool:
+    """A living combatant's stun waits for their own turn instead of ticking at the end of the round."""
+    cb = scene.combat
+    return cb.active and c.hp > 0 and any(o.id == c.id for o in cb.order)
+
+
 def run_foes(scene: Scene) -> list[str]:
     """After a party member acted: every foe whose turn comes acts, until it is the hero's or a companion's turn
     (then the companion waits for the hero's advice). Returns [{text: shown to the player, brief: for the narrator}]."""
-    out = []
-    cb = scene.combat
-    if cb.threat:                                # a blow at the hero still waits for the reaction
+    out = drain_notes(scene)
+    if scene.combat.threat:                      # a blow at the hero still waits for the reaction
         return out
     guard = 0
-    while cb.active and guard < 12:
+    while scene.combat.active and guard < 12:
+        cb = scene.combat
         guard += 1
         c = current(scene)
         if c is None:
             break
         if c.hp <= 0:
-            step(scene); continue
+            step(scene); out += drain_notes(scene); continue
         if M.in_party(scene, c):
+            if consume_stun(c):
+                out.append({"text": f"{c.name} оглушён и пропускает ход.", "brief": f"{c.name} оглушён и пропускает ход"})
+                step(scene); out += drain_notes(scene); continue
             cb.awaiting = "" if c.is_player else c.id
             break
         r = foe_turn(scene, c)
@@ -321,6 +355,7 @@ def run_foes(scene: Scene) -> list[str]:
         if end:
             out.append({"text": end, "brief": "бой окончен"}); break
         step(scene)
+        out += drain_notes(scene)
     return out
 
 
@@ -400,19 +435,28 @@ def advance_turn(scene: Scene) -> str:
 
 
 def tick_conditions(scene: Scene) -> str:
-    msgs = []
+    msgs, fallen = [], []
     for c in scene.characters.values():
         keep = []
         for cond in c.conditions:
             if cond.name == "кровотечение" and cond.potency > 0 and c.hp > 0:
                 old = c.hp; c.hp = max(0, c.hp - cond.potency)
                 msgs.append(f"{c.name}: кровотечение −{cond.potency} HP ({old}→{c.hp})")
+                if c.hp == 0:
+                    fallen.append(c)
+            if cond.name == "оглушение" and _waits_turn(scene, c):
+                keep.append(cond)         # spent on their own turn (consume_stun)
+                continue
             cond.turns_left -= 1
             if cond.turns_left > 0:
                 keep.append(cond)
             else:
                 msgs.append(f"{c.name}: состояние «{cond.name}» прошло")
         c.conditions = keep
+    for c in fallen:                      # bled out: the same fall as from a blow (out of the order, end of the fight)
+        msgs.append(f"{c.name} истекает кровью и падает без сознания.")
+        _, more = knockout(scene, c, "")
+        msgs += more
     return "\n".join(msgs)
 
 
@@ -529,8 +573,10 @@ REACTIONS = {   # key -> (button label, what the button sends)
 }
 REACTION_TEXTS = {t for _, t in REACTIONS.values()}
 REACT_WORDS = {
-    "dodge": ("уклон", "увор", "отскак", "отскоч", "пригиба", "откатыва", "отпрыг", "ухожу от", "уйти от", "отступаю"),
-    "block": ("блок", "щит", "закрыва", "прикрыва", "подставляю"),
+    "dodge": ("уклон", "увор", "отскак", "отскоч", "пригиба", "откатыва", "отпрыг", "ухожу от", "уйти от", "отступаю",
+              "бегу", "бежа", "убега", "прыга", "прыгн", "уворач", "увёрт", "уверт", "увернус", "кувырк", "ныря", "нырн",
+              "перекат", "отшатыв", "шаг в сторон", "в сторону", "отхожу", "падаю на"),
+    "block": ("блок", "щит", "закрыва", "прикрыва", "подставляю", "защищ"),
     "parry": ("парир", "контрат", "отбива", "отбить", "встречн", "отвожу"),
     "take": ("принима", "терплю", "стою", "броню"),
 }
@@ -545,6 +591,7 @@ def can_react(scene: Scene, tgt: Character) -> bool:
 def threaten(scene: Scene, foe: Character, tgt: Character) -> dict:
     """The foe swings at the hero; the blow lands only after the player's reaction."""
     scene.combat.threat = foe.id
+    scene.combat.awaiting = ""            # the hero's reaction is next, not a companion's advice
     w = equipped_weapon(foe)
     wname = w.name if w else "безоружный удар"
     opts = " · ".join(f"{REACTIONS[k][0]} {p}%" for k, p in reaction_odds(scene).items() if p is not None)
@@ -752,6 +799,57 @@ def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: 
     cb.react_last, cb.react_streak = "", 0             # an inventive answer resets the foes' read
     head = f"🛡 {hero.name}: {how} — {attr} {hero.attrs.get(attr, 10)}, {difficulty}, против {foe.name}: шанс {pct}% — "
     return _land(scene, foe, hero, OUTCOME_KIND[outcome], ok, head, how)
+
+
+def escape(scene: Scene, attr_raw: str, difficulty: str, kind: str = "", how: str = "") -> dict:
+    """The hero runs or yields; the narrator judged how hard it is, the code rolls.
+    Surrender: no roll, the fight ends and the foes decide what comes next. Flight: attribute vs difficulty plus the
+    most agile standing foe's edge (ranged foes and heavy armour make it harder); success ends the fight and leaves the
+    foes behind, failure loses the turn and a blow that was waiting lands. Returns {ok, ended, text, msgs, brief}."""
+    cb = scene.combat
+    hero = scene.player
+    foe = scene.characters.get(cb.threat) if cb.threat else None
+    cb.threat = ""
+    foes = [scene.characters[o.id] for o in cb.order
+            if o.id in scene.characters and not M.in_party(scene, scene.characters[o.id])
+            and scene.characters[o.id].hp > 0]
+    how = (how or "").strip()[:80]
+    k = (kind or "").lower()
+    if any(w in k for w in ("сда", "surrender", "капитул")):
+        how = how or "сдаётся"
+        end_combat(scene)
+        names = ", ".join(f.name for f in foes) or "враги"
+        return {"ok": True, "ended": True, "msgs": [], "text": f"🏳 {hero.name}: {how} — бой окончен.",
+                "brief": f"{hero.name} сдаётся ({how}): бой окончен, {names} решают его судьбу — опиши это"}
+    how = how or "бросается бежать"
+    difficulty = norm_difficulty(difficulty)
+    if difficulty == "невозможно" or not foes:
+        ok, text = False, f"🏃 {hero.name}: {how} — отступать некуда."
+    else:
+        edge = max(f.attrs.get("Ловкость", 10) for f in foes) - 10
+        if any(is_ranged(equipped_weapon(f)) for f in foes):
+            edge += 2
+        dc = DIFFICULTY[difficulty] + edge + max(0, armor_value(hero) - 2)
+        r = M.check(scene, hero, attr_raw or "Ловкость", dc)
+        ok = r["success"]
+        if r.get("chance") is not None:
+            text = (f"🏃 {hero.name}: {how} — {r['attr']} {r['attr_val']} против погони {r['dc']} ({difficulty}) — "
+                    f"шанс {r['chance']}% — {'успех' if ok else 'провал'}.")
+        else:
+            text = f"🏃 {hero.name}: {how} — " + r["text"].split(": ", 1)[-1]
+    if ok:
+        gone = {f.id for f in foes}
+        scene.present = [i for i in scene.present if i not in gone]
+        end_combat(scene)
+        names = ", ".join(f.name for f in foes)
+        return {"ok": True, "ended": True, "msgs": [], "text": text + " Бой окончен: враги остались позади.",
+                "brief": f"{hero.name} вырывается из боя ({how}); {names} остались позади — опиши бегство"}
+    msgs = []
+    brief = f"{hero.name} пытается скрыться ({how}), но не уйти от погони"
+    if foe is not None and foe.hp > 0 and hero.hp > 0:      # the waiting blow lands: the hero gave up his guard
+        land = _land(scene, foe, hero, "take", False, "", how)
+        text += "\n" + land["text"]; msgs += land["msgs"]; brief = land["brief"]
+    return {"ok": False, "ended": not scene.combat.active, "text": text, "msgs": msgs, "brief": brief}
 
 
 def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str, difficulty: str, effect: str,

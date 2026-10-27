@@ -329,4 +329,4 @@ def test_deed_impossible_and_hero_turn_hint():
     run(s, [('<introduce name="Громила" side="враг"', "/>"), ("<end", "/>")], "*жду*")
     C.start_combat(s, [ch(s, "Громила").id], first=s.player_id)
     eng, ev = run(s, [("<end", "/>")], "*делаю финт и бью щитом*")
-    assert "<deed" in eng.llm.prompts[0] and "Простой удар оружием" in eng.llm.prompts[0]
+    assert "<deed" in eng.llm.prompts[0] and "оцени задуманное" in eng.llm.prompts[0]

@@ -66,7 +66,8 @@ def build_system(scene: Scene) -> str:
 <part who="Имя"/> — спутник покидает отряд (обида, предательство, своя дорога).
 <attack who="Имя" target="Цель" weapon="оружие"/> — атака в бою (числа считает Система).
 <deed attr="Атрибут" difficulty="легко|обычно|трудно|очень трудно|невозможно" effect="урон|оглушение|ослабление|усиление|нет" target="Цель" how="кратко"/> — свободный приём героя (финт, песок в глаза, удар щитом, опрокинуть жаровню). Ты оцениваешь, реально ли это и насколько трудно; Система бросает и применяет эффект.
-<react attr="Атрибут" difficulty="…" outcome="уклон|смягчить|контратака" how="кратко"/> — герой своими словами защищается от удара, который ещё не нанесён; ставь только когда об этом просит Система.
+<react attr="Атрибут" difficulty="легко|обычно|трудно|очень трудно|невозможно" outcome="уклон|смягчить|контратака" how="кратко"/> — герой своими словами защищается от удара, который ещё не нанесён; ставь только когда об этом просит Система. уклон — удар мимо целиком; смягчить — урон вдвое меньше; контратака — без урона и ответный удар (трудно). Сначала <react>, потом описывай исход.
+<escape kind="бегство|сдача" attr="Атрибут" difficulty="легко|обычно|трудно|очень трудно|невозможно" how="кратко"/> — герой пытается убежать из боя или сдаться (только если игрок так написал). Реально ли бегство и насколько трудно — решаешь ты, бросает Система; сдача бой заканчивает.
 <combat action="start" foes="Имя1,Имя2"/> / <combat action="end"/> — начать или закончить бой.
 <condition who="Имя" name="кровотечение" turns="2" potency="2"/> — состояние.
 <scale level="камерный|обычный|крупный"/> — необязательно: если масштаб сцены явно другой, чем в подсказке.
@@ -114,12 +115,15 @@ def build_system(scene: Scene) -> str:
     return s
 
 
-def companion_turn(c: Character, advice: str) -> str:
+def companion_turn(c: Character, advice: str, hero_acts: str = "") -> str:
     """A companion's turn in a fight: the hero may advise; the companion decides in character."""
     acts = ", ".join(a.name for a in c.abilities if a.kind == "active") or "нет"
     head = (f"[ХОД СПУТНИКА] В бою сейчас действует {c.name}" + (f" ({c.kind})" if c.kind else "") + "."
             + (f" Характер: {c.personality}." if c.personality else ""))
     tip = (f"Совет героя: «{advice}»." if advice else f"Герой промолчал — {c.name} решает сам(а).")
+    if hero_acts:
+        tip += (f" Герой заявил действие: «{hero_acts}» — сейчас ход {c.name}, его действие не выполняется "
+                f"(игрок повторит на своём ходу): не считай его выполненным.")
     rule = (f"{c.name} решает в своём характере: разумный совет выполняет; бессмысленный или самоубийственный — "
             f"отказывается (скажи это через <speak who=\"{c.name}\" …/>) и делает то, что считает верным. "
             f"Поставь РОВНО ОДНО действие {c.name}: <attack who=\"{c.name}\" target=\"…\" weapon=\"…\"/> "
@@ -132,7 +136,8 @@ def player_message(scene: Scene, state: str, text: str | None, hint: str = "", m
                    companion: Character | None = None) -> str:
     from . import intent as I
     it = I.parse(text)
-    act = companion_turn(companion, it.spoken() if it else "") if companion else I.for_narrator(it)
+    act = (companion_turn(companion, it.spoken() if it else "", "; ".join(it.actions) if it else "")
+           if companion else I.for_narrator(it))
     how = "" if companion else I.hint(it)
     if how:
         hint = (hint + " " if hint else "") + how

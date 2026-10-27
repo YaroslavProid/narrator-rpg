@@ -90,6 +90,7 @@ class TurnEngine:
         self.intent = {}                      # scene id -> this turn's parsed player input (intent.Intent | None)
         self.comp_turn = {}                   # scene id -> companion whose turn this is (after the hero's advice)
         self.reacted = {}                     # scene id -> narrator step at which a free reaction was settled
+        self.cur_step = {}                    # scene id -> the narrator step now running
         self.bg_running = False
         self.bg_cancel = asyncio.Event()   # set when a player turn wants the slot
 
@@ -698,7 +699,7 @@ class TurnEngine:
                              st_.length_mult, st_.max_speaks)
         from . import intent as I
         comp = (scene.characters.get(scene.combat.awaiting)
-                if scene.combat.active and scene.combat.awaiting else None)
+                if scene.combat.active and scene.combat.awaiting and not scene.combat.threat else None)
         self.comp_turn[scene.id] = comp.id if comp else ""
         if comp and text is not None and not M.parse_system_command(text) and not re.search(r"[*«»\"()]", text):
             text = f"«{text.strip()}»"              # on a companion's turn the hero's words are advice, i.e. speech
@@ -707,6 +708,10 @@ class TurnEngine:
             await emit({"type": "player", "text": text, "turn": scene.turn})
             self.log(scene, "player", text, scene.player.name)
             self.mark_active(scene, scene.player_id)
+            hero_it = self.intent.get(scene.id)
+            if comp and hero_it is not None and hero_it.acts:
+                await self.sys_msg(emit, scene, f"Сейчас ход {comp.name}: действие героя («{'; '.join(hero_it.actions)[:120]}») "
+                                                f"не выполняется — повторите его на своём ходу.")
             # mention detection for NPCs named in the player's input
             for cid in list(scene.present):
                 if cid != scene.player_id and scene.characters[cid].name.lower() in text.lower():
@@ -752,14 +757,11 @@ class TurnEngine:
         if ((cur is not None and cur.is_player) or (not scene.combat.active and foes_near)) and comp is None:
             it = self.intent.get(scene.id)
             if it is not None and it.acts:
+                # one short sentence: it stays in the history, the tag rules live in the system prompt
                 turn_hint = (turn_hint + " " if turn_hint else "") + (
-                    ("Бой, ход героя. " if scene.combat.active else "Рядом враги. ") +
-                    f"Оцени то, что написал игрок: реально ли это сейчас (снаряжение, положение, мир) "
-                    f"и насколько трудно. Простой удар оружием — короткий замах и <attack who=\"{scene.player.name}\" target=\"…\"/>. "
-                    f"Хитрый приём, манёвр, окружение, финт — <deed attr=\"Атрибут\" difficulty=\"легко|обычно|трудно|"
-                    f"очень трудно|невозможно\" effect=\"урон|оглушение|ослабление|усиление|нет\" target=\"…\" "
-                    f"how=\"что делает герой, кратко\"/>. Способность — <cast …/>. Исход посчитает Система; "
-                    f"не подменяй задуманное другим действием.")
+                    ("Бой, ход героя: " if scene.combat.active else "Рядом враги: ") +
+                    "оцени задуманное — удар <attack>, приём <deed>, способность <cast>"
+                    + (", бегство/сдача <escape>" if scene.combat.active else "") + "; не подменяй его другим.")
         quiet = self.quiet_npcs(scene)
         if quiet:
             turn_hint = (turn_hint + " " if turn_hint else "") + (
@@ -772,6 +774,7 @@ class TurnEngine:
         after_pause = 0
         while steps < budget.max_steps:
             steps += 1
+            self.cur_step[scene.id] = steps
             pause = (scene.combat.threat, scene.combat.awaiting)
             if scene.combat.active and any(pause) and pause != paused0:
                 after_pause += 1
@@ -1103,7 +1106,7 @@ class TurnEngine:
             foe = scene.characters.get(scene.combat.threat)
             r = C.react_free(scene, a.get("attr", ""), a.get("difficulty", ""), a.get("outcome", ""), a.get("how", ""))
             note = await self.after_reaction(scene, emit, transcript, r, foe)
-            self.reacted[scene.id] = self.reacted.get(scene.id) or 1
+            self.reacted[scene.id] = self.reacted.get(scene.id) or self.cur_step.get(scene.id, 1)
             return note
         if tag.name == "deed":
             actor = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
@@ -1140,6 +1143,27 @@ class TurnEngine:
             self.mark_active(scene, actor.id, *( [tgt.id] if tgt else []))
             after = (await self.next_turns(scene, emit, transcript)
                      if scene.combat.active and M.in_party(scene, actor) else "")
+            return f"{r['text']} Опиши именно это: {r['brief']}. {after}"
+        if tag.name == "escape":
+            hero = scene.player
+            if not scene.combat.active:
+                return "Боя нет — <escape> не нужен. Опиши уход обычным повествованием."
+            if hero.hp <= 0:
+                return f"{hero.name} без сознания и не может бежать. Закончи <end/>."
+            threatened = bool(scene.combat.threat)
+            if not threatened:       # under a pending blow the flight is the hero's answer to it; otherwise his turn
+                gate = self.out_of_turn(scene, hero, "escape") or self.hero_idle(scene, hero, "escape")
+                if gate:
+                    return gate
+            r = C.escape(scene, a.get("attr", ""), a.get("difficulty", ""), a.get("kind", ""), a.get("how", ""))
+            full = r["text"] + ("\n" + "\n".join(r["msgs"]) if r["msgs"] else "")
+            await self.sys_msg(emit, scene, full, "roll")
+            transcript.append({"kind": "roll", "text": full})
+            self.log(scene, "roll", r["text"].split("\n")[0], hero.name)
+            self.mark_active(scene, hero.id)
+            if threatened:
+                self.reacted[scene.id] = self.reacted.get(scene.id) or self.cur_step.get(scene.id, 1)
+            after = await self.next_turns(scene, emit, transcript) if scene.combat.active else ""
             return f"{r['text']} Опиши именно это: {r['brief']}. {after}"
         if tag.name == "combat":
             act = (a.get("action") or "").lower()
@@ -1265,11 +1289,7 @@ class TurnEngine:
         foe = scene.characters.get(scene.combat.threat)
         w = C.equipped_weapon(foe) if foe else None
         return (f"[РЕАКЦИЯ] {foe.name if foe else 'Враг'} бьёт героя ({w.name if w else 'без оружия'}); игрок сам описал, "
-                f"как защищается. Оцени: реально ли это сейчас и насколько трудно. Сначала поставь "
-                f"<react attr=\"Атрибут\" difficulty=\"легко|обычно|трудно|очень трудно|невозможно\" "
-                f"outcome=\"уклон|смягчить|контратака\" how=\"что делает герой, кратко\"/> — Система бросит и ответит, "
-                f"потом опиши исход. уклон — удар мимо целиком; смягчить — урон вдвое меньше; контратака — без урона и "
-                f"ответный удар (трудно). Не решай исход сам.")
+                f"как защищается: оцени и сначала поставь <react …/> (бегство — <escape …/>), потом опиши исход.")
 
     async def resolve_threat(self, scene, emit, transcript, text) -> str:
         """Active defence: the hero's reaction to the pending blow is settled by code (a parry strikes back at once),

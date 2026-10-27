@@ -41,17 +41,55 @@ def _words(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lstrip("—–-").strip() if s else ""
 
 
+def _tail_after(t: str, openers: tuple[str, ...]) -> tuple[str, str]:
+    """An unclosed «quote / "quote / (thought: everything after the first opener belongs to it."""
+    idx = [t.find(o) for o in openers if o in t]
+    if not idx:
+        return t, ""
+    i = min(idx)
+    return t[:i], t[i + 1:]
+
+
+_CONJ_TAIL = re.compile(r"(?:^|[\s,;])(?:и|а|но|я|потом|затем|тут|тогда|вдруг|сразу|при этом)\s*$", re.I)
+
+
+def _strip_speech_tag(rest: str) -> str:
+    """«Я подхожу к стражнику и говорю:» -> the deed «Я подхожу к стражнику»; «и кричу:» -> nothing."""
+    ms = list(SPEAK.finditer(rest))
+    if not ms:
+        return rest
+    pre = rest[:ms[-1].start()]
+    while True:
+        new = _CONJ_TAIL.sub("", pre)
+        if new == pre:
+            break
+        pre = new
+    return pre
+
+
 def parse(text: str | None) -> Intent | None:
     if text is None:
         return None
-    t = text.strip()
+    t = re.sub(r"\*{2,}([^*]+?)\*{2,}", r"*\1*", text.strip())      # **bold** is the same starred action
     it = Intent()
     acts = [m.group(1) for m in re.finditer(r"\*([^*]+)\*", t)]
     t = re.sub(r"\*[^*]+\*", " ", t)
+    if "*" in t:                                  # an unclosed *action runs up to the next marker or the end
+        i = t.index("*")
+        m = re.match(r"[^«\"„(]*", t[i + 1:])
+        acts.append(m.group(0))
+        t = t[:i] + " " + t[i + 1:][m.end():]
     quoted = [m.group(1) or m.group(2) or m.group(3) for m in re.finditer(r"«([^»]+)»|\"([^\"]+)\"|„([^“”]+)[“”]", t)]
     t = re.sub(r"«[^»]+»|\"[^\"]+\"|„[^“”]+[“”]", " ", t)
+    t, open_speech = _tail_after(t, ("«", "\"", "„"))      # an unclosed «quote is speech to the end
+    if open_speech.strip(" »“”\"„"):
+        quoted.append(open_speech.strip(" »“”\"„"))
     thoughts = [m.group(1) or m.group(2) for m in re.finditer(r"\(\(([^)]+)\)\)|\(([^)]+)\)", t)]
     t = re.sub(r"\(\([^)]+\)\)|\([^)]+\)", " ", t)
+    t, open_thought = _tail_after(t, ("(",))
+    if open_thought.strip(" ()"):
+        thoughts.append(open_thought.strip(" ()"))
+    t = re.sub(r"[»“”)]", " ", t)
     rest_raw = re.sub(r"\s+", " ", t).strip()
     rest = _clean(t)
 
@@ -64,13 +102,23 @@ def parse(text: str | None) -> Intent | None:
             it.manner = "громко"
         if MANNER_ONLY.match(_clean(a)):
             continue                      # «*я говорю шепотом*» — manner, not a deed
-        it.actions.append(_clean(a))
+        if re.search(r"\w", a):
+            it.actions.append(_clean(a))
     it.speech += [_words(q) for q in quoted if _words(q)]
     it.thoughts += [_clean(x) for x in thoughts if _clean(x)]
-    if rest:
-        if declares_thought and not declares_speech:
+    if rest and re.search(r"\w", rest):
+        if quoted and not declares_speech:
+            # words in quotes are the speech; the text around them is the deed or a speech tag («и кричу:»)
+            if WHISPER.search(rest):
+                it.manner = "шёпотом"
+            elif SHOUT.search(rest):
+                it.manner = "громко"
+            deed = _clean(_strip_speech_tag(rest))
+            if deed and re.search(r"\w", deed):
+                it.actions.append(deed)
+        elif declares_thought and not declares_speech:
             it.thoughts.append(rest)
-        elif declares_speech or rest_raw.startswith(("—", "–", "-")) or quoted:
+        elif (declares_speech or quoted or rest_raw.startswith(("—", "–", "-")) or rest_raw.endswith("?")):
             it.speech.append(_words(rest_raw))
         else:
             it.actions.append(rest)

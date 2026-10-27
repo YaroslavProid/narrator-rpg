@@ -174,6 +174,7 @@ class Combat(BaseModel):
     threat: str = ""        # foe id whose blow at the hero waits for the player's reaction («Система»)
     react_last: str = ""    # the hero's last reaction and how many times in a row (foes read a repeated trick)
     react_streak: int = 0
+    notes: list[str] = []   # round-end events (bleeding, falls) waiting to be shown to the player
 
 
 class Event(BaseModel):

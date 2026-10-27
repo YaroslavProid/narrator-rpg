@@ -8,6 +8,8 @@ TIERS = {  # tier: (speaks, step_tokens, words, max_steps, hint)
     "крупный": (5, 420, 170, 6, "Масштаб сцены: крупный — можно развёрнуто, несколько голосов."),
 }
 ORDER = ["камерный", "обычный", "крупный"]
+TRAVEL = (r"иду в|идём|отправля|еду|скачу|выхожу|вхожу|захожу|прибыва|спускаюсь|поднимаюсь|направля|добира|плыв|въезжа|"
+          r"покидаю|дорог[ау]|путь|переход|новое место")     # a deed that moves the hero to another place: bigger scene
 
 
 @dataclass
@@ -43,6 +45,8 @@ def classify(text: str | None, npcs: int, introduced_last: bool, last_tier: str 
         lvl = max(lvl, 2 if npcs >= 2 else 1); reasons.append("новый персонаж")
     if npcs >= 4:
         lvl = max(lvl, 2); reasons.append(f"{npcs} NPC")
+    if it.acts and re.search(TRAVEL, " ".join(it.actions).lower()):
+        lvl = 2; reasons.append("перемещение/новое место")
     if not it.acts and not combat_ongoing:
         lvl = 0 if npcs <= 1 else min(lvl, 1); reasons.append("только речь/мысли")
     if it.acts and len(" ".join(it.actions)) > 220 and lvl < 2:
