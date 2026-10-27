@@ -2,10 +2,13 @@
 import re
 from dataclasses import dataclass, asdict
 
-TIERS = {  # tier: (speaks, step_tokens, words, max_steps, hint)
-    "камерный": (2, 220, 70, 3, "Масштаб сцены: камерный — коротко, 1–2 реплики."),
-    "обычный": (3, 300, 110, 4, "Масштаб сцены: обычный — 2–3 реплики, без лишних описаний."),
-    "крупный": (5, 420, 170, 6, "Масштаб сцены: крупный — можно развёрнуто, несколько голосов."),
+# Length is steered by the wording of the hint only (a soft nudge about the weight of the scene). The numbers are
+# safety ceilings against runaway generation and loops, not targets:
+# tier: (speaks: informational, step_tokens ceiling, max_steps ceiling, hard_speaks ceiling, hint)
+TIERS = {
+    "камерный": (2, 900, 6, 6, "Сцена лёгкая — не раздувай."),
+    "обычный": (3, 1000, 8, 8, "Сцена обычная — столько, сколько нужно, без лишнего."),
+    "крупный": (5, 1200, 10, 10, "Сцена насыщенная — можно развернуться."),
 }
 ORDER = ["камерный", "обычный", "крупный"]
 TRAVEL = (r"иду в|идём|отправля|еду|скачу|выхожу|вхожу|захожу|прибыва|спускаюсь|поднимаюсь|направля|добира|плыв|въезжа|"
@@ -15,11 +18,10 @@ TRAVEL = (r"иду в|идём|отправля|еду|скачу|выхожу|�
 @dataclass
 class Budget:
     tier: str
-    speaks: int        # target number of character lines (hint)
-    hard_speaks: int   # safety stop, slightly above the target
-    step_tokens: int
-    max_steps: int
-    words: int
+    speaks: int        # typical number of character lines (informational only)
+    hard_speaks: int   # safety ceiling against a speak loop (or the player's own limit from the settings)
+    step_tokens: int   # n_predict ceiling for one narrator step (anti-runaway, not a length target)
+    max_steps: int     # loop guard
     hint: str
     reasons: list
 
@@ -61,11 +63,10 @@ def turn_budget(text, npcs, introduced_last=False, last_tier=None, combat_ongoin
         o = ORDER.index(scale_override)
         lvl = max(0, min(2, lvl + (1 if o > lvl else -1 if o < lvl else 0))); reasons.append(f"рассказчик: {scale_override}")
     tier = ORDER[lvl]
-    sp, tok, words, steps, hint = TIERS[tier]
+    sp, tok, steps, hard, hint = TIERS[tier]
     mult = max(0.5, min(2.0, mult or 1.0))
-    sp = max(1, round(sp * mult)); tok = int(tok * mult); words = int(words * mult); steps = max(2, round(steps * min(mult, 1.5)))
-    if npcs <= 1: sp = min(sp, 2 if tier != "крупный" else 3)
-    hard = sp + 1 + (1 if tier == "крупный" else 0)
+    sp = max(1, round(sp * mult)); tok = int(tok * max(1.0, mult)); steps = max(4, round(steps * max(1.0, min(mult, 1.5))))
+    hard = max(sp + 1, round(hard * max(1.0, mult)))
     if max_speaks:
         hard = min(hard, max_speaks); sp = min(sp, max_speaks)
-    return Budget(tier, sp, hard, tok, steps, words, hint, reasons)
+    return Budget(tier, sp, hard, tok, steps, hint, reasons)

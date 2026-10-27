@@ -806,7 +806,7 @@ class TurnEngine:
                 scene.turns.append({"role": "user", "content": f"[СИСТЕМА: результат] {b2.hint}"})
                 continue
             if tag.name == "speak" and speaks >= budget.hard_speaks:
-                result = "На этот ход реплик достаточно. Заверши ход коротким повествованием и <end/>."
+                result = "На этот ход реплик достаточно. Заверши ход повествованием и <end/>."
             else:
                 result = await self._execute(scene, tag, emit, calls, transcript)
                 if tag.name == "speak":
@@ -1321,7 +1321,7 @@ class TurnEngine:
         if foe:
             self.mark_active(scene, hero.id, foe.id)
         after = await self.next_turns(scene, emit, transcript)
-        return f"[РЕАКЦИЯ ГЕРОЯ — уже посчитано Системой] {brief}. Опиши именно это, коротко. {after}"
+        return f"[РЕАКЦИЯ ГЕРОЯ — уже посчитано Системой] {brief}. Опиши именно это. {after}"
 
     async def emit_foes(self, scene, emit, transcript, acts) -> str:
         """Show each foe action as a roll; return one plain line for the narrator to describe."""
@@ -1329,7 +1329,7 @@ class TurnEngine:
             await self.sys_msg(emit, scene, x["text"], "roll")
             transcript.append({"kind": "roll", "text": x["text"]})
             self.log(scene, "roll", x["text"].split("\n")[0], "Система")
-        return ("Враги действуют: " + "; ".join(x["brief"] for x in acts) + ". Опиши именно это, коротко. ") if acts else ""
+        return ("Враги действуют: " + "; ".join(x["brief"] for x in acts) + ". Опиши именно это. ") if acts else ""
 
     def quiet_npcs(self, scene, turns: int = 3) -> list[str]:
         """Neutral NPCs that have been silent for a while — the narrator is asked whether they already left."""

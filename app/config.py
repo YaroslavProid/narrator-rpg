@@ -32,7 +32,7 @@ TEMPERATURE = _float("NARRATOR_TEMPERATURE", 0.8)
 TOP_P = _float("NARRATOR_TOP_P", 0.95)
 MIN_P = _float("NARRATOR_MIN_P", 0.05)
 REPEAT_PENALTY = _float("NARRATOR_REPEAT_PENALTY", 1.05)
-SPEAK_TOKENS = _int("NARRATOR_SPEAK_TOKENS", 120)      # max tokens of one NPC line
+SPEAK_TOKENS = _int("NARRATOR_SPEAK_TOKENS", 400)      # ceiling for one NPC line (anti-runaway, not a target)
 CYR_MIN = _float("NARRATOR_CYR_MIN", 0.7)              # below this share of Cyrillic the step is regenerated
 LENGTH_MULT = _float("NARRATOR_LENGTH_MULT", 1.0)      # default per-scene turn length multiplier
 INACTIVE_LEAVE = _int("NARRATOR_INACTIVE_LEAVE", 8)    # neutral NPCs auto-leave after N quiet turns (0 = off)
