@@ -202,6 +202,8 @@ def apply_threat(scene: Scene, c: Character, threat: str = "обычный") -> 
     for a in c.attrs:
         c.attrs[a] = base + grow + (1 if (beast and a in ("Сила", "Ловкость", "Выносливость")) else 0) \
             - (2 if (beast and a in ("Разум", "Влияние")) else 0)
+    c.hp_bonus = 3 * M.amp(c.attrs.get("Выносливость", 10)) + M.passive_bonus(c, "hp")
+    c.mp_bonus = 2 * M.amp(c.attrs.get("Разум", 10)) + M.passive_bonus(c, "mp")
     if not equipped_weapon(c):
         desc = (c.description + " " + c.kind).lower()
         named = next((k for k in WEAPON_DEFAULTS if k in desc), None)
@@ -241,7 +243,12 @@ def check_end(scene: Scene) -> str:
         return end_combat(scene)
     if not party:
         end_combat(scene)
-        return "⟦ БОЙ ОКОНЧЕН ⟧ Отряд пал."
+        for cid in M.party_ids(scene):
+            c = scene.characters[cid]
+            c.conditions = [x for x in c.conditions if x.name != "оглушение"]
+            c.hp = max(c.hp, 1)
+        return ("⟦ БОЙ ОКОНЧЕН ⟧ Отряд пал. Враги решают судьбу героя (плен, грабёж, уходят — добивать не обязательно); "
+                "опиши это. Герой приходит в себя с 1 HP.")
     return ""
 
 
@@ -617,6 +624,16 @@ def leave_combat(scene: Scene, c: Character) -> str:
     return check_end(scene)
 
 
+STRIKE_WORDS = ("руб", "бью", "бьём", "удар", "колю", "режу", "стреля", "мета", "кида", "швыря", "атаку", "выпад",
+                "вонза", "пронза", "пинаю", "толка")
+
+
+def strikes_instead(text: str) -> bool:
+    """The player attacks instead of defending: no defensive word, but a blow."""
+    t = (text or "").lower()
+    return not any(w in t for ws in REACT_WORDS.values() for w in ws) and any(w in t for w in STRIKE_WORDS)
+
+
 def parse_reaction(text: str) -> str:
     """The first reaction named in the player's words; nothing recognisable means the blow is taken on the armour."""
     t = (text or "").lower()
@@ -715,7 +732,8 @@ def _land(scene: Scene, foe: Character, hero: Character, choice: str, ok: bool, 
     dmg, dmg_s = weapon_damage(scene, foe, w, skill)
     if choice == "block" and ok:
         dmg = max(1, dmg // 2); dmg_s += f", блок ½={dmg}"
-        verdict, brief = "успех! Удар принят на блок.", f"{hero.name} блокирует удар {foe.name}, урон снижен до {dmg}"
+        verdict = "успех! Удар ослаблен." if how_free else "успех! Удар принят на блок."
+        brief = f"{hero.name} блокирует удар {foe.name}, урон снижен до {dmg}"
     elif choice == "parry":
         dmg = round(dmg * 1.5); dmg_s += f", раскрылся ×1,5={dmg}"
         verdict, brief = "провал!", f"{hero.name} пытается парировать, но раскрывается — {foe.name} попадает, урон {dmg}"
@@ -745,6 +763,7 @@ DIFFICULTY = {"легко": 10, "обычно": 13, "трудно": 16, "оче�
 OUTCOMES = {"уклон": "avoid", "избеж": "avoid", "avoid": "avoid", "dodge": "avoid", "мимо": "avoid",
             "смягч": "reduce", "ослаб": "reduce", "блок": "reduce", "reduce": "reduce", "block": "reduce",
             "контр": "counter", "counter": "counter", "парир": "counter", "parry": "counter"}
+OUTCOMES.update({"размен": "trade", "trade": "trade", "нет": "none", "none": "none", "не защищ": "none"})
 OUTCOME_KIND = {"avoid": "dodge", "reduce": "block", "counter": "parry"}
 MIN_DIFF = {"avoid": "обычно", "counter": "трудно"}     # a big payoff is never «легко»
 EFFECTS = {"урон": "урон", "damage": "урон", "оглуш": "оглушение", "stun": "оглушение", "сбит": "оглушение",
@@ -789,6 +808,18 @@ def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: 
     difficulty = norm_difficulty(difficulty)
     how = (how or "своя реакция").strip()[:80]
     w, skill, a = _foe_attack(foe)
+    if outcome in ("trade", "none"):
+        cb.react_last, cb.react_streak = "", 0
+        if outcome == "none":
+            ok, pct = M.chance(scene, 1 - hit_chance(a, 0, hero))
+            head = f"🛡 {hero.name}: {how} — не защищается, шанс что удар пройдёт мимо {pct}% — "
+            r = _land(scene, foe, hero, "take", ok, head, how)
+            return r
+        head = f"🛡 {hero.name}: {how} — размен ударами, защиты нет — "
+        r = _land(scene, foe, hero, "take", False, head, how)
+        r["counter"] = hero.hp > 0                     # the hero's own blow comes right after (the engine rolls it)
+        r["brief"] += "; герой бьёт в ответ"
+        return r
     if difficulty == "невозможно":
         head = f"🛡 {hero.name}: {how} — так не выйдет — "
         return _land(scene, foe, hero, OUTCOME_KIND[outcome] if outcome != "counter" else "dodge", False, head, how)

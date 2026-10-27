@@ -376,10 +376,24 @@ def pick_member(scene: Scene, rest: str) -> tuple[Character, str]:
     return scene.player, rest
 
 
+def _stat_delta(raw, cur: int, name: str, rej: list) -> int:
+    """'+5' / '-3' as a change; 'A->B' / 'A→B' as «from A to B» (a change of B − current); anything else is refused."""
+    s = str(raw or "").strip()
+    if not s or s == "0":
+        return 0
+    if re.fullmatch(r"[+-]?\s*\d+", s):
+        return _int(s)
+    m = re.fullmatch(r"\d*\s*(?:->|→|=>)\s*(\d+)", s)
+    if m:
+        return int(m.group(1)) - cur
+    rej.append(f"непонятное значение {name}=\"{s}\" — пиши {name}=\"+5\" или {name}=\"-3\"")
+    return 0
+
+
 def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], list[str]]:
     """Validate and clamp a model-proposed delta. Returns (applied messages, rejected notes)."""
     msgs, rej = [], []
-    dhp = _int(delta.get("hp", 0)); cap = max(1, math.ceil(c.max_hp * LIMITS["hp_frac"]))
+    dhp = _stat_delta(delta.get("hp", 0), c.hp, "hp", rej); cap = max(1, math.ceil(c.max_hp * LIMITS["hp_frac"]))
     if dhp:
         if abs(dhp) > cap:
             rej.append(f"HP {dhp:+d} урезано до {math.copysign(cap, dhp):+.0f}")
@@ -387,7 +401,7 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
         old = c.hp; c.hp = max(0, min(c.max_hp, c.hp + dhp))
         if c.hp != old:
             msgs.append(f"{c.name}: HP {old}→{c.hp}/{c.max_hp}" + (" — без сознания!" if c.hp == 0 else ""))
-    dmp = _int(delta.get("mp", 0)); cap = max(1, math.ceil(c.max_mp * LIMITS["mp_frac"]))
+    dmp = _stat_delta(delta.get("mp", 0), c.mp, "mp", rej); cap = max(1, math.ceil(c.max_mp * LIMITS["mp_frac"]))
     if dmp:
         if abs(dmp) > cap:
             rej.append(f"MP {dmp:+d} урезано"); dmp = int(math.copysign(cap, dmp))

@@ -1,6 +1,6 @@
 """TurnEngine: narrator-orchestrated turn loop on a single llama.cpp slot, append-only prompt,
 dynamic per-turn budget, long-term memory (archive/summaries/facts/retrieval), rewind/regenerate."""
-import asyncio, itertools, json, re, time
+import asyncio, difflib, itertools, json, re, time
 from . import config, mechanics as M, prompts as P, store
 from . import memory as MEM
 from . import combat as C
@@ -82,6 +82,9 @@ def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_
     return scene
 
 
+OOC_RE = re.compile(r"^\s*[(\[]{0,2}\s*(ooc|оос|вне\s+игры|офф?топ|мета)\b", re.I)
+
+
 class TurnEngine:
     def __init__(self, llm, memory: "MEM.VectorStore | None" = None):
         self.llm = llm
@@ -91,6 +94,8 @@ class TurnEngine:
         self.comp_turn = {}                   # scene id -> companion whose turn this is (after the hero's advice)
         self.reacted = {}                     # scene id -> narrator step at which a free reaction was settled
         self.cur_step = {}                    # scene id -> the narrator step now running
+        self.narr_seen = {}                   # scene id -> narration paragraphs already shown this turn
+        self.react_turn = {}                  # scene id -> this turn was the hero's reaction to a blow
         self.lull_event = {}                  # scene id -> something notable happened this turn
         self.ephemeral = {}                   # scene id -> (index in scene.turns, line): current prompt only, never stored
         self.bg_running = False
@@ -203,6 +208,17 @@ class TurnEngine:
                     st = {"turn": scene.turn, "command": cmd[0], "llm_calls": [], "wall_s": 0}
                     await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
                     return st
+            if text is not None and OOC_RE.match(text):
+                note = re.sub(r"^\s*[(\[]{0,2}\s*(ooc|оос|вне\s+игры|офф?топ|мета)\s*[:\-—]?\s*", "", text, flags=re.I)
+                note = note.rstrip(")] ").strip()
+                scene.director_note = ((scene.director_note + " ") if scene.director_note else "") + \
+                    f"Пожелание игрока (вне игры): {note}"
+                await emit({"type": "player", "text": text})
+                await self.sys_msg(emit, scene, "Пожелание учтено — рассказчик применит его со следующего хода.")
+                store.save_scene(scene)
+                st = {"turn": scene.turn, "command": "ooc", "llm_calls": [], "wall_s": 0}
+                await emit({"type": "turn_end", "stats": st, "state": self.state(scene)})
+                return st
             return await self._turn(scene, text, emit)
 
     async def _director(self, scene: Scene, order: str, emit, *, audit: bool = False, chat: bool = False) -> dict:
@@ -755,10 +771,19 @@ class TurnEngine:
         transcript = []
         react_note = ""
         free_threat = ""
+        self.react_turn[scene.id] = False
         self.reacted[scene.id] = 0
         if scene.combat.active and scene.combat.threat and not (text and M.parse_system_command(text)):
-            if text is None or text.strip() in C.REACTION_TEXTS:
+            self.react_turn[scene.id] = True
+            it0 = self.intent.get(scene.id)
+            if text is not None and OOC_RE.match(text):
+                self.react_turn[scene.id] = False
+                react_note = ("[ВНЕ ИГРЫ] Это пожелание игрока, а не действие героя: учти его дальше. Удар врага всё ещё "
+                              "ждёт реакции — ответь одной фразой и закончи <end/>.")
+            elif text is None or text.strip() in C.REACTION_TEXTS:
                 react_note = await self.resolve_threat(scene, emit, transcript, text)
+            elif it0 is not None and not it0.acts:
+                react_note = await self.resolve_threat(scene, emit, transcript, "*принимаю удар на броню*")
             else:
                 free_threat = scene.combat.threat
                 react_note = self.free_reaction_hint(scene)
@@ -809,7 +834,8 @@ class TurnEngine:
                                                                          companion=comp)})
         if lull_line:
             self.ephemeral[scene.id] = (len(scene.turns) - 1, lull_line)
-        steps = 0; speaks = 0
+        steps = 0; speaks = 0; refusals = 0
+        self.narr_seen[scene.id] = []
         paused0 = (scene.combat.threat, scene.combat.awaiting)
         after_pause = 0
         while steps < budget.max_steps:
@@ -827,6 +853,8 @@ class TurnEngine:
             out, st = await self._narrate_step(scene, emit, calls, budget.step_tokens)
             scene.turns.append({"role": "model", "content": out.raw})
             transcript += out.parts
+            if getattr(out, "repeat", False):
+                break
             tag = out.tag
             if out.error and tag is None:
                 tag = await self._retry_tag(scene, out.error, calls)
@@ -852,8 +880,16 @@ class TurnEngine:
                 if tag.name == "speak":
                     speaks += 1
             scene.turns.append({"role": "user", "content": "[СИСТЕМА: результат] " + result})
+            if result.startswith("Отклонено"):
+                refusals += 1
+                # a foe's move or someone acting out of turn: the System already did (or will do) it — the turn is over
+                if refusals >= 2 or result.startswith(("Отклонено: ходы врагов", "Отклонено: сейчас ход",
+                                                       "Отклонено: урон в бою", "Отклонено: в этом ходу герой защищался")):
+                    break
         if free_threat and scene.combat.active and scene.combat.threat == free_threat:
-            await self.resolve_threat(scene, emit, transcript, text)
+            late = await self.resolve_threat(scene, emit, transcript, text)
+            # settled after the narrator finished: he describes it at the start of the next turn
+            scene.director_note = ((scene.director_note + " ") if scene.director_note else "") +                 "Итог прошлого хода, ещё не описанный — начни с него: " + late
         if scene.combat.active:
             cur = C.current(scene)
             if comp is not None and cur is not None and cur.id == comp.id:   # the narrator never acted for the companion
@@ -904,6 +940,13 @@ class TurnEngine:
                 await emit({"type": "retract", "id": sid})
                 continue
             parts = split_speech(out.narration, names) if out.narration else []
+            seen = self.narr_seen.setdefault(scene.id, [])
+            if len(out.narration) >= 40 and any(difflib.SequenceMatcher(None, out.narration, s).ratio() > 0.7 for s in seen):
+                await emit({"type": "retract", "id": sid})       # the same paragraph again: the model is looping
+                out.parts, out.repeat = [], True
+                return out, st
+            if out.narration:
+                seen.append(out.narration)
             await emit({"type": "replace", "id": sid, "segments": parts})
             for p in parts:
                 if p["kind"] == "speech":
@@ -1006,8 +1049,18 @@ class TurnEngine:
             c = M.resolve_character(scene, a.get("who", ""))
             if not c:
                 return f"Нет персонажа «{a.get('who')}». Изменение отклонено."
+            hp_raw = str(a.get("hp") or "").strip()
+            if (scene.combat.active and hp_raw.startswith("-") and any(o.id == c.id for o in scene.combat.order)):
+                return ("Отклонено: урон в бою считает только Система (<attack>, <deed>, реакции) — он уже учтён в "
+                        "результатах. HP вручную не меняй; опиши то, что посчитано, и закончи <end/>.")
+            hp0 = c.hp
             msgs, rej = M.apply_delta(scene, c, a)
+            if a.get("state"):
+                rej.append("state не поддерживается — состояние ставится через <condition>, и только как прямое следствие")
             text = "; ".join(msgs) or "без изменений"
+            if hp0 > 0 and c.hp == 0:
+                text, more = C.knockout(scene, c, text)
+                text += ("\n" + "\n".join(more)) if more else ""
             if rej:
                 text += " (Система отклонила: " + "; ".join(rej) + ")"
             await self.sys_msg(emit, scene, "⚙️ " + text)
@@ -1025,8 +1078,10 @@ class TurnEngine:
             made = []
             for nm in names:
                 c = await self._introduce(scene, nm, a.get("desc", ""), emit, transcript, exact=count > 1)
-                if (hostile or a.get("threat")) and not M.in_party(scene, c):
+                if hostile and not M.in_party(scene, c):
                     C.mark_foe(scene, c, a.get("threat", ""))
+                elif a.get("threat") and not c.threat:
+                    c.threat = C.norm_threat(a["threat"])           # remembered for a fight that may come; not hostile
                 made.append(c)
             if count == 1:
                 return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}."
@@ -1109,6 +1164,14 @@ class TurnEngine:
                 return f"{tgt.name} уже повержен(а). Выбери другую цель или закончи <end/>."
             if atk.hp <= 0:
                 return f"{atk.name} без сознания и не может атаковать. Опиши сцену и закончи <end/>."
+            if (scene.combat.active and not M.in_party(scene, atk) and M.in_party(scene, tgt)
+                    and not any(o.id == atk.id for o in scene.combat.order)):
+                C.mark_foe(scene, atk)                      # a newcomer to a running fight strikes on its own turn
+                text = C.join_combat(scene, [atk.id])
+                await self.sys_msg(emit, scene, text, "roll")
+                transcript.append({"kind": "roll", "text": text})
+                return (f"Отклонено: ходы врагов считает Система — {atk.name} вступает в бой и ударит в свою очередь. "
+                        f"Опиши, как {atk.name} бросается в драку, и закончи <end/>.")
             if not scene.combat.active and not M.in_party(scene, atk) and C.can_react(scene, tgt):
                 # a foe opens the fight with a blow at the hero: it waits for the player's reaction
                 note = C.mark_foe(scene, atk)
@@ -1156,6 +1219,9 @@ class TurnEngine:
             actor = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
             if actor.is_player and scene.combat.active and scene.combat.threat:
                 return "Сейчас герой защищается от удара — это <react attr=… difficulty=… outcome=… how=…/>, не <deed>."
+            if actor.is_player and self.react_turn.get(scene.id):
+                return ("Отклонено: в этом ходу герой защищался — реакция уже посчитана. Ответный удар не состоялся: "
+                        "не описывай его успех; ударить герой сможет в свой ход.")
             gate = self.out_of_turn(scene, actor, "deed") or self.hero_idle(scene, actor, "deed")
             if gate:
                 return gate
@@ -1333,13 +1399,17 @@ class TurnEngine:
         foe = scene.characters.get(scene.combat.threat)
         w = C.equipped_weapon(foe) if foe else None
         return (f"[РЕАКЦИЯ] {foe.name if foe else 'Враг'} бьёт героя ({w.name if w else 'без оружия'}); игрок сам описал, "
-                f"как защищается: оцени и сначала поставь <react …/> (бегство — <escape …/>), потом опиши исход.")
+                f"как защищается: оцени и сначала поставь <react …/> (бегство — <escape …/>), потом опиши исход. "
+                f"Бьёт вместо защиты — outcome=\"размен\"; занят другим — outcome=\"нет\"; защиту за игрока не придумывай.")
 
     async def resolve_threat(self, scene, emit, transcript, text) -> str:
         """Active defence: the hero's reaction to the pending blow is settled by code (a parry strikes back at once),
         then the remaining foes act. Returns the line the narrator has to describe."""
         foe = scene.characters.get(scene.combat.threat)
-        r = C.react(scene, C.parse_reaction(text or ""))
+        if C.strikes_instead(text or ""):                 # a blow instead of a defence: blows are traded
+            r = C.react_free(scene, "Сила", "обычно", "размен", "бьёт навстречу")
+        else:
+            r = C.react(scene, C.parse_reaction(text or ""))
         return await self.after_reaction(scene, emit, transcript, r, foe)
 
     async def after_reaction(self, scene, emit, transcript, r, foe) -> str:

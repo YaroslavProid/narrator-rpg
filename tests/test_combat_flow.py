@@ -63,7 +63,7 @@ def test_out_of_turn_actions_are_refused():
     C.start_combat(s, [b.id])
     s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == b.id)
     eng, ev = run(s, [('<attack who="Бандит" target="Ярен"', "/>"), ("<end", "/>")], "*держу оборону*", eng)
-    assert "ходы врагов считает Система" in eng.llm.prompts[1]
+    assert "ходы врагов считает Система" in s.turns[-1]["content"] and len(eng.llm.prompts) == 1   # the turn ends there
 
 
 def test_companion_turn_asks_for_advice_and_may_refuse():

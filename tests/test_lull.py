@@ -62,8 +62,14 @@ def test_combat_turns_without_change_count_and_a_fall_resets(monkeypatch):
     eng = TurnEngine(FakeLLM([]))
     play(s, eng, QUIET, "*держу оборону*")
     assert s.lull == 1 and s.combat.active
-    foe.hp = 5
-    play(s, eng, [('<change who="Разбойник" hp="-5"', "/>"), ("<end", "/>")], "*держу оборону*")
+    from app import combat as C
+
+    def fell(scene, atk, tgt, weapon=""):            # a sure blow: what is tested is the reset, not the dice
+        tgt.hp = 0
+        text, msgs = C.knockout(scene, tgt, "⚔️ удар")
+        return {"hit": True, "text": text, "msgs": msgs, "damage": 5}
+    monkeypatch.setattr(C, "attack", fell)
+    play(s, eng, [(f'<attack who="{s.player.name}" target="Разбойник"', "/>"), ("<end", "/>")], "*бью разбойника*")
     assert foe.hp == 0 and s.lull == 0
 
 
