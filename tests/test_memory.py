@@ -10,11 +10,12 @@ from tests.test_engine_fake import FakeLLM
 
 # ---------------- dynamic budget ----------------
 def test_budget_tiers():
-    one = turn_budget("Спрашиваю её тихо: «Ты боишься?»", npcs=1)
+    # from what the hero did (deed / speech) and the fight — no keyword guessing
+    one = turn_budget("«Ты боишься?»", npcs=1)
     norm = turn_budget("Осматриваю комнату и ищу следы", npcs=2)
-    big = turn_budget("Выхватываю меч и атакую бандита", npcs=3)
-    trav = turn_budget("Отправляюсь по дороге к старой мельнице", npcs=2)
-    assert (one.tier, norm.tier, big.tier, trav.tier) == ("камерный", "обычный", "крупный", "крупный")
+    big = turn_budget("Выхватываю меч и атакую бандита", npcs=3, combat_ongoing=True)
+    crowd = turn_budget("Иду через площадь", npcs=4)
+    assert (one.tier, norm.tier, big.tier, crowd.tier) == ("камерный", "обычный", "крупный", "крупный")
     assert one.speaks < norm.speaks < big.speaks and one.step_tokens < big.step_tokens
     assert big.hard_speaks > big.speaks                      # soft bound slightly above
     assert turn_budget(None, 2, combat_ongoing=True).tier == "крупный"
@@ -22,7 +23,7 @@ def test_budget_tiers():
 
 
 def test_budget_settings_and_scale_tag():
-    b = turn_budget("Атакую", npcs=3, mult=2.0)
+    b = turn_budget("Атакую", npcs=3, mult=2.0, combat_ongoing=True)
     assert b.speaks >= 8 or b.speaks == 10 or b.step_tokens == 840
     assert turn_budget("Атакую", npcs=3, max_speaks=2).hard_speaks == 2
     assert turn_budget("Осматриваюсь", npcs=2, scale_override="крупный").tier == "крупный"

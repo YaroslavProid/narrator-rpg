@@ -87,6 +87,8 @@ class TurnEngine:
         self.llm = llm
         self.mem = memory
         self.lock = asyncio.Lock()
+        self.intent = {}                      # scene id -> this turn's parsed player input (intent.Intent | None)
+        self.comp_turn = {}                   # scene id -> companion whose turn this is (after the hero's advice)
         self.bg_running = False
         self.bg_cancel = asyncio.Event()   # set when a player turn wants the slot
 
@@ -124,7 +126,7 @@ class TurnEngine:
 
     def party_info(self, scene):
         """Per companion: EXP catch-up multiplier, whether the AI is still filling the card."""
-        return {cid: {"exp_mult": M.catchup_mult(scene, c), "filling": cid in scene.pending_fill}
+        return {cid: {"filling": cid in scene.pending_fill}
                 for cid in scene.party if (c := scene.characters.get(cid))}
 
     def payload(self, scene):
@@ -497,7 +499,7 @@ class TurnEngine:
                           "kind": "summary", "witnesses": wit}]
             new_docs += [{"id": f"f{f.id}", "text": f.text, "turn": f.turn, "kind": "fact",
                           "witnesses": f.known_by} for f in new_facts]
-            msgs.append(f"Архив: ходы {from_turn}–{to_turn} ({acc} ток.) → сводка, фактов +{len(new_facts)}")
+            msgs.append(f"Архив: ходы {from_turn}–{to_turn} сведены в летопись" + (f", фактов +{len(new_facts)}" if new_facts else ""))
         if cancel and cancel.is_set():
             # still apply — summaries are valid; skip compress/re-warm upstream
             scene.summaries = summaries
@@ -644,8 +646,10 @@ class TurnEngine:
         if n <= 0:
             return []
         msgs = []
+        if scene.combat.active:
+            return []
         for cid in list(scene.present):
-            if cid == scene.player_id or cid in scene.party:
+            if cid == scene.player_id or cid in scene.party or scene.characters[cid].side == "hostile":
                 continue
             c = scene.characters[cid]
             # seed last_active for characters that never got a stamp
@@ -691,6 +695,13 @@ class TurnEngine:
         st_ = scene.settings
         budget = turn_budget(text, npcs, introduced, last_tier, combat or scene.combat.active,
                              st_.length_mult, st_.max_speaks)
+        from . import intent as I
+        comp = (scene.characters.get(scene.combat.awaiting)
+                if scene.combat.active and scene.combat.awaiting else None)
+        self.comp_turn[scene.id] = comp.id if comp else ""
+        if comp and text is not None and not M.parse_system_command(text) and not re.search(r"[*«»\"()]", text):
+            text = f"«{text.strip()}»"              # on a companion's turn the hero's words are advice, i.e. speech
+        self.intent[scene.id] = I.parse(text)       # what the hero really did: act / speak / only think
         if text is not None:
             await emit({"type": "player", "text": text, "turn": scene.turn})
             self.log(scene, "player", text, scene.player.name)
@@ -722,8 +733,20 @@ class TurnEngine:
         book = G.tail_block(scene)
         if book:
             turn_hint = (turn_hint + " " if turn_hint else "") + book
+        cur = C.current(scene)
+        if cur is not None and cur.is_player and comp is None:
+            it = self.intent.get(scene.id)
+            if it is not None and it.acts:
+                turn_hint = (turn_hint + " " if turn_hint else "") + (
+                    f"Бой, ход героя: сначала коротко опиши замах, затем сразу <attack who=\"{cur.name}\" target=\"…\"/> "
+                    f"(или <cast …/>) — исход посчитает Система. Не описывай за героя другое действие.")
+        quiet = self.quiet_npcs(scene)
+        if quiet:
+            turn_hint = (turn_hint + " " if turn_hint else "") + (
+                f"Давно молчат: {', '.join(quiet)}. Если кто-то из них уже ушёл по сюжету — поставь <leave who=\"Имя\"/>.")
         scene.turns.append({"role": "user", "content": P.player_message(scene, M.state_line(scene), text,
-                                                                         hint=turn_hint, memories=mem_lines)})
+                                                                         hint=turn_hint, memories=mem_lines,
+                                                                         companion=comp)})
         transcript = []
         steps = 0; speaks = 0
         while steps < budget.max_steps:
@@ -756,6 +779,13 @@ class TurnEngine:
                 if tag.name == "speak":
                     speaks += 1
             scene.turns.append({"role": "user", "content": "[СИСТЕМА: результат] " + result})
+        if scene.combat.active:
+            cur = C.current(scene)
+            if comp is not None and cur is not None and cur.id == comp.id:   # the narrator never acted for the companion
+                await self.sys_msg(emit, scene, f"{comp.name} выжидает и держит позицию.", "roll")
+                await self.next_turns(scene, emit, transcript)
+            elif cur is not None and not M.in_party(scene, cur):            # the turn got stuck on a foe
+                await self.emit_foes(scene, emit, transcript, C.run_foes(scene))
         narr_words = sum(len(p["text"].split()) for p in transcript if p["kind"] == "narration")
         hot = [c for c in calls if c["kind"].startswith(("narrate", "speak", "tag"))]
         stats = {"turn": scene.turn, "tier": budget.tier, "tier_reasons": budget.reasons, "budget_speaks": budget.speaks,
@@ -850,13 +880,18 @@ class TurnEngine:
             self.log(scene, "speech", line, c.name)
             self.mark_active(scene, c.id)
             return f"{c.name}: «{line}»"
+        if tag.name in ("roll", "attack", "cast"):
+            actor = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
+            refused = self.out_of_turn(scene, actor, tag.name) or self.hero_idle(scene, actor, tag.name)
+            if refused:
+                return refused
         if tag.name == "roll":
             who = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
             r = M.check(scene, who, a.get("skill", ""), a.get("dc", 12))
             text = ("🎲 " if scene.rule_mode == "d20" else "⚙️ ") + r["text"]
             msgs = []
             if r["success"]:
-                M.award_exp(scene, who, 5 + max(0, r["dc"] - 10), msgs)
+                M.award_exp(scene, who, M.share_exp(who, M.check_share(r["dc"])), msgs)
             full = text + ("\n" + "\n".join(msgs) if msgs else "")
             await self.sys_msg(emit, scene, full, "roll")
             transcript.append({"kind": "roll", "text": full})
@@ -870,7 +905,7 @@ class TurnEngine:
             if c.is_player:
                 return "Игрок и так знает себя."
             got = M.apply_reveal(c, a.get("what", "all") or "all")
-            kind = c.kind if c.reveal.kind else "неизвестно"
+            kind = (c.kind or "не указан") if c.reveal.kind else "неизвестно"
             parts = [f"Ты узнаёшь о {c.name}: вид — {kind}."]
             if c.reveal.attrs:
                 parts.append("Характеристики: " + ", ".join(f"{k} {v}" for k, v in c.attrs.items()) + ".")
@@ -911,8 +946,8 @@ class TurnEngine:
             made = []
             for nm in names:
                 c = await self._introduce(scene, nm, a.get("desc", ""), emit, transcript, exact=count > 1)
-                if hostile and not M.in_party(scene, c):
-                    c.side = "hostile"
+                if (hostile or a.get("threat")) and not M.in_party(scene, c):
+                    C.mark_foe(scene, c, a.get("threat", ""))
                 made.append(c)
             if count == 1:
                 return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}."
@@ -936,24 +971,23 @@ class TurnEngine:
                 return (f"У {caster.name} нет способности «{a.get('spell')}». Активные: {have}. "
                         f"Опиши попытку без результата или выбери другое действие.")
             tgt = M.resolve_character(scene, a.get("target", "")) if a.get("target") else None
+            if tgt and tgt.hp <= 0 and ab.effect in ("damage", "debuff", "control"):
+                return f"{tgt.name} уже повержен(а). Выбери другую цель или закончи <end/>."
             if tgt and not tgt.is_player:
                 for x, y in ((caster, tgt), (tgt, caster)):
                     if ab.effect in ("damage", "debuff", "control") and M.in_party(scene, x) and not M.in_party(scene, y):
-                        y.side = "hostile"
+                        C.mark_foe(scene, y)
             hp_before = tgt.hp if tgt else 0
             r = C.cast(scene, caster, ab, tgt)
             if r["ok"] and tgt and r["damage"]:
                 self._rewards(scene, caster, tgt, hp_before, r["msgs"])
             full = r["text"] + ("\n" + "\n".join(r["msgs"]) if r["msgs"] else "")
-            if r["ok"] and scene.combat.active:
-                adv = C.advance_turn(scene)
-                if adv:
-                    full += "\n" + adv
             await self.sys_msg(emit, scene, full, "roll")
             transcript.append({"kind": "roll", "text": full})
             self.log(scene, "roll", r["text"], caster.name)
             self.mark_active(scene, caster.id, tgt.id if tgt else None)
-            return r["text"] + (" Опиши, как это выглядит и что происходит." if r["ok"] else "")
+            after = await self.next_turns(scene, emit, transcript) if r["ok"] and M.in_party(scene, caster) else ""
+            return r["text"] + (" Опиши, как это выглядит и что происходит. " + after if r["ok"] else "")
         if tag.name == "fulfill":
             from . import magic as G
             ok, msg = G.fulfill(scene, a.get("what", ""))
@@ -989,28 +1023,31 @@ class TurnEngine:
             tgt = M.resolve_character(scene, a.get("target", ""))
             if not tgt:
                 return f"Нет цели «{a.get('target')}»."
+            if tgt.hp <= 0:
+                return f"{tgt.name} уже повержен(а). Выбери другую цель или закончи <end/>."
             if scene.rule_mode == "система" and not scene.combat.active:
                 # still allow attack; combat.attack uses no-dice path
                 pass
-            hp_before = tgt.hp
-            for x, y in ((atk, tgt), (tgt, atk)):      # whoever fights the party is a foe
+            notes = []
+            for x, y in ((atk, tgt), (tgt, atk)):      # whoever fights the party is a foe (and gets a real sheet)
                 if M.in_party(scene, x) and not M.in_party(scene, y):
-                    y.side = "hostile"
+                    n = C.mark_foe(scene, y)
+                    if n:
+                        notes.append(n)
+            hp_before = tgt.hp
             r = C.attack(scene, atk, tgt, a.get("weapon", ""))
+            r["msgs"] = notes + r["msgs"]
             if r.get("hit"):
                 self._rewards(scene, atk, tgt, hp_before, r["msgs"])
             full = r["text"]
             if r["msgs"]:
                 full += "\n" + "\n".join(r["msgs"])
-            if scene.combat.active:
-                adv = C.advance_turn(scene)
-                if adv:
-                    full += "\n" + adv
             await self.sys_msg(emit, scene, full, "roll")
             transcript.append({"kind": "roll", "text": full})
             self.log(scene, "roll", r["text"], atk.name)
             self.mark_active(scene, atk.id, tgt.id)
-            return r["text"] + " Опиши последствия удара."
+            after = await self.next_turns(scene, emit, transcript) if M.in_party(scene, atk) else ""
+            return r["text"] + " Опиши последствия удара. " + after
         if tag.name == "combat":
             act = (a.get("action") or "").lower()
             if act in ("start", "begin", "бой"):
@@ -1019,15 +1056,25 @@ class TurnEngine:
                 for f in foes:
                     c = M.resolve_character(scene, f) or await self._introduce(scene, f, "", emit, transcript)
                     if not M.in_party(scene, c):
-                        c.side = "hostile"
+                        C.mark_foe(scene, c, a.get("threat", ""))
                     ids.append(c.id)
+                ids = ids or [i for i in scene.present if scene.characters[i].side == "hostile"]
+                if not ids:
+                    return "Не с кем сражаться: назови противников в foes=\"Имя1,Имя2\"."
                 if scene.combat.active:     # a fight already started by an attack: add newcomers, keep the order
                     text = C.join_combat(scene, ids)
                 else:
-                    text = C.start_combat(scene, ids or [i for i in scene.present if i != scene.player_id][:4])
+                    text = C.start_combat(scene, ids)
                 await self.sys_msg(emit, scene, text, "roll")
                 transcript.append({"kind": "roll", "text": text})
                 self.log(scene, "system", text, "Система")
+                cur = C.current(scene)
+                if cur and not M.in_party(scene, cur):          # foes faster than the party strike first
+                    text += " " + await self.emit_foes(scene, emit, transcript, C.run_foes(scene))
+                cur = C.current(scene)
+                if cur and scene.combat.active:
+                    text += (f" Ход героя — закончи <end/>." if cur.is_player else
+                             f" Ход спутника {cur.name} — закончи <end/>, игрок может дать совет.")
                 return text
             if act in ("end", "stop", "конец"):
                 text = C.end_combat(scene)
@@ -1055,16 +1102,87 @@ class TurnEngine:
         return "Неизвестное действие."
 
     def _rewards(self, scene, atk, tgt, hp_before, msgs):
-        """EXP for a hit on a foe, and for the whole party when the foe falls."""
+        """A small share for a hit on a foe; for a defeated foe every party member gets a share of THEIR OWN level,
+        larger the stronger the foe is relative to them (catch-up for companions comes from that by itself)."""
         if M.in_party(scene, atk) and not M.in_party(scene, tgt):
-            M.award_exp(scene, atk, config.EXP_HIT, msgs)
+            M.award_exp(scene, atk, M.share_exp(atk, M.HIT_SHARE), msgs)
         if hp_before > 0 and tgt.hp == 0 and not M.in_party(scene, tgt):
-            msgs.append(f"⟦ ПОБЕДА ⟧ {tgt.name} повержен(а) — опыт всему отряду.")
+            msgs.append(f"⟦ ПОБЕДА ⟧ {tgt.name} ({tgt.threat or 'обычный'}, ур. {tgt.level}) повержен(а) — опыт всему отряду.")
             for cid in M.party_ids(scene):
-                M.award_exp(scene, scene.characters[cid], M.kill_exp(tgt), msgs, capped=False)
+                c = scene.characters[cid]
+                gap = tgt.level - c.level
+                note = f" (враг сильнее на {gap} ур.)" if gap > 0 else ""
+                M.award_exp(scene, c, M.share_exp(c, M.kill_share(c, tgt)), msgs, capped=False, note=note)
+
+    def out_of_turn(self, scene, actor, tag) -> str:
+        """In a fight the order is real: foes act by code on their turn; the party acts only on its own turn."""
+        if tag == "roll" or not scene.combat.active:
+            return ""
+        cur = C.current(scene)
+        in_order = any(o.id == actor.id for o in scene.combat.order)
+        if not M.in_party(scene, actor) and in_order:
+            return ("Отклонено: ходы врагов считает Система по очереди — их действия уже в результатах. "
+                    "Опиши происходящее, не ставь за врагов <attack>/<cast>.")
+        if (cur and cur.id == actor.id and M.in_party(scene, actor) and not actor.is_player
+                and self.comp_turn.get(scene.id) != actor.id):
+            return (f"Отклонено: ход {actor.name} начнётся после совета игрока. Покажи, что {actor.name} готовится, "
+                    f"и закончи <end/>.")
+        if cur and in_order and cur.id != actor.id:
+            return (f"Отклонено: сейчас ход {cur.name}, а не {actor.name}. "
+                    + ("Закончи ход <end/> — игрок решит, что делает герой." if cur.is_player else
+                       f"{cur.name} действует после совета игрока — закончи <end/>." if M.in_party(scene, cur)
+                       else "Закончи ход <end/>."))
+        return ""
+
+    async def next_turns(self, scene, emit, transcript) -> str:
+        """After a party member acted in a fight: pass the turn, let the foes act by code, stop at the hero or a
+        companion. Returns the text the narrator gets (and the player sees as rolls)."""
+        if not scene.combat.active:
+            return ""
+        C.step(scene)
+        head = await self.emit_foes(scene, emit, transcript, C.run_foes(scene))
+        cur = C.current(scene)
+        if not scene.combat.active:
+            return head + "Бой окончен."
+        if cur is None:
+            return head
+        if cur.is_player:
+            return head + f"Теперь ход героя ({cur.name}): закончи описание и <end/> — решает игрок."
+        return head + f"Теперь ход спутника {cur.name}: закончи описание и <end/> — игрок может дать {cur.name} совет."
+
+    async def emit_foes(self, scene, emit, transcript, acts) -> str:
+        """Show each foe action as a roll; return one plain line for the narrator to describe."""
+        for x in acts:
+            await self.sys_msg(emit, scene, x["text"], "roll")
+            transcript.append({"kind": "roll", "text": x["text"]})
+            self.log(scene, "roll", x["text"].split("\n")[0], "Система")
+        return ("Враги действуют: " + "; ".join(x["brief"] for x in acts) + ". Опиши именно это, коротко. ") if acts else ""
+
+    def quiet_npcs(self, scene, turns: int = 3) -> list[str]:
+        """Neutral NPCs that have been silent for a while — the narrator is asked whether they already left."""
+        out = []
+        for cid in scene.present:
+            c = scene.characters.get(cid)
+            if c and not c.is_player and cid not in scene.party and c.side != "hostile" \
+                    and scene.turn - max(c.last_active_turn, 1) >= turns:
+                out.append(c.name)
+        return out[:5]
+
+    def hero_idle(self, scene, actor, tag) -> str:
+        """Only the player decides what the hero does: on a turn with no deed from the hero (pure speech, thoughts,
+        «Продолжить») the narrator may not roll, attack or cast FOR the hero. NPC actions are untouched."""
+        if not actor.is_player:
+            return ""
+        it = self.intent.get(scene.id, "missing")
+        if it == "missing" or (it is not None and it.acts):
+            return ""
+        what = "только говорит или думает" if it is not None else "ничего не делает (ход «Продолжить»)"
+        return (f"Отклонено: в этом ходу герой {what} — проверки, атаки и способности за героя не делай. "
+                f"Покажи, как отвечают NPC и что делает мир; решать за героя будет игрок.")
 
     async def _introduce(self, scene, name, desc, emit, transcript, exact=False):
-        # exact: members of a pack («Лесная тварь 2») must not fuzzy-match an existing «Лесная тварь 1»
+        # exact: members of a pack («Лесная тварь 2», «Волк 2») must not fuzzy-match an existing «… 1»
+        exact = exact or bool(re.search(r"\d+\s*$", name))
         ex = (next((c for c in scene.characters.values() if M.norm(c.name) == M.norm(name)), None) if exact
               else M.resolve_character(scene, name))
         if ex and not ex.is_player:

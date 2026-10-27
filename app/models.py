@@ -30,6 +30,8 @@ class Item(BaseModel):
     armor: int = 0
     equipped: bool = False
     slot: str = ""
+    effect: str = ""        # consumables: heal | mana | cure | damage | buff (set by combat.ensure_item_stats)
+    power: int = 0          # 1..4 on the same scale as abilities
 
 
 class Ability(BaseModel):
@@ -118,19 +120,17 @@ class Character(BaseModel):
     exp_next: int = 100
     attr_points: int = 0
     ability_points: int = 0
-    skill_points: int = 0             # legacy alias; migrated → ability_points
-    ability_offers: list[str] = []    # legacy (old random offers), unused
-    ability_locks: list[str] = []     # legacy, unused
     hp_bonus: int = 0                 # part of max_hp that comes from attributes and passives (recomputed)
     mp_bonus: int = 0
     attrs: dict[str, int] = Field(default_factory=lambda: {a: 10 for a in ATTRS})
     abilities: list[Ability] = []
-    skills: dict[str, int] = {}       # legacy; emptied on migrate
     inventory: list[Item] = []
     conditions: list[Condition] = []
     reveal: Reveal = Field(default_factory=Reveal)
     last_active_turn: int = 0
     side: Literal["neutral", "party", "hostile"] = "neutral"   # hero's party / foe / everyone else
+    threat: str = ""                  # foes: слабый | обычный | опасный | элита | босс (sets stats and the EXP reward)
+    inspect_turn: int = -100          # last failed «осмотри»: another try only a few turns later
     paths: dict[str, int] = {}        # path id -> highest rank/tier opened
 
     @model_validator(mode="before")
@@ -151,34 +151,6 @@ class Character(BaseModel):
         for a, v in migrated.items():
             if a in ATTRS:
                 data["attrs"][a] = max(3, min(20, v))
-        # skill_points → ability_points
-        if not data.get("ability_points") and data.get("skill_points"):
-            data["ability_points"] = int(data.get("skill_points") or 0)
-        # legacy skills dict → soft attr bumps (once), then clear
-        legacy = data.get("skills") or {}
-        if isinstance(legacy, dict) and legacy and not data.get("abilities"):
-            # map known old skill names into attr bumps (≤+1 each)
-            from_skill = {
-                "Атлетика": "Сила", "Ближний бой": "Сила",
-                "Акробатика": "Ловкость", "Скрытность": "Ловкость", "Ловкость рук": "Ловкость",
-                "Взлом": "Ловкость", "Стрельба": "Ловкость",
-                "Выносливость": "Выносливость",
-                "Магия": "Разум", "Знания": "Разум", "Расследование": "Разум",
-                "Восприятие": "Воля", "Проницательность": "Воля", "Выживание": "Воля", "Медицина": "Воля",
-                "Убеждение": "Влияние", "Обман": "Влияние", "Запугивание": "Влияние", "Выступление": "Влияние",
-            }
-            bumps: dict[str, int] = {}
-            for sk, lvl in legacy.items():
-                attr = from_skill.get(sk) or ATTR_MIGRATE.get(sk)
-                if not attr or attr not in ATTRS:
-                    continue
-                try:
-                    bumps[attr] = bumps.get(attr, 0) + min(2, max(0, int(lvl)))
-                except (TypeError, ValueError):
-                    pass
-            for attr, b in bumps.items():
-                data["attrs"][attr] = max(3, min(20, int(data["attrs"].get(attr, 10)) + min(2, b)))
-            data["skills"] = {}
         if "reveal" not in data or data["reveal"] is None:
             data["reveal"] = {}
         if data.get("is_player"):
@@ -198,6 +170,7 @@ class Combat(BaseModel):
     round: int = 0
     order: list[Combatant] = []
     current: int = 0
+    awaiting: str = ""      # companion id whose turn waits for the hero's advice (or «пусть решает сама»)
 
 
 class Event(BaseModel):

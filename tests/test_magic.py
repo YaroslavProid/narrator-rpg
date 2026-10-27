@@ -75,6 +75,7 @@ def test_cast_spends_mp_rolls_power_and_amplifies():
     s = mk(); p = s.player; borek = M.resolve_character(s, "Борек")
     G.unlock_tier(s, p, "Маг")
     arrow = C.find_ability(p, "стрела")
+    C.mark_foe(s, borek)                       # a blank foe gets its real sheet when the fight starts
     mp0, hp0 = p.mp, borek.hp
     r = C.cast(s, p, arrow, borek)
     assert r["ok"] and p.mp == mp0 - 2 and borek.hp == hp0 - r["damage"] and r["damage"] >= 1 + 2   # 1d8 + Разум(+2)

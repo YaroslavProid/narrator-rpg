@@ -535,7 +535,7 @@ def unlock_tier(scene: Scene, c: Character, path_name: str) -> tuple[bool, str]:
         return False, f"{p.name}, {word} {ROMAN[s['tier']]} закрыт(а) для {c.name}. Не хватает: " + "; ".join(s["missing"]) + "."
     t = next_tier(c, p)
     pts = tier_cost(t)
-    c.ability_points -= pts; c.skill_points = c.ability_points
+    c.ability_points -= pts
     have = {M.norm(a.name) for a in c.abilities}
     got = []
     for a in t.abilities:

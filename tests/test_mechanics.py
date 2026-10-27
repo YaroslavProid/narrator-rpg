@@ -56,13 +56,16 @@ def test_check_d20_soft_deterministic():
     assert r1["total"] == r1["die"] + r1["mod"]
 
 
-def test_check_system_mode_soft():
+def test_check_system_mode_is_a_chance():
     s = mk("система")
-    # attr 14 vs dc 13 → moderate success; vs dc 20 → fail
-    r = M.check(s, s.player, "Ловкость", 13)
-    assert r["die"] is None and r["success"]
-    r2 = M.check(s, s.player, "Ловкость", 20)
-    assert not r2["success"]
+    # attr 14: vs dc 14 → 50%, vs 13 → 56%, vs 20 → 14%; no die shown, but the outcome is not fixed
+    r = M.check(s, s.player, "Ловкость", 14)
+    assert r["die"] is None and r["chance"] == 50 and "шанс 50%" in r["text"]
+    assert M.check(s, s.player, "Ловкость", 13)["chance"] == 55     # +5 percentage points per point
+    assert M.check(s, s.player, "Ловкость", 20)["chance"] == 20
+    wins = sum(M.check(s, s.player, "Ловкость", 14)["success"] for _ in range(400))
+    assert 150 < wins < 250                       # ~50%, really random
+    assert M.check(s, s.player, "Ловкость", 30)["chance"] == 5   # never certain
 
 
 def test_dc_clamped():
@@ -126,15 +129,13 @@ def test_migrate_old_attrs():
     c = Character.model_validate({
         "id": "x", "name": "Старый",
         "attrs": {"Сила": 12, "Ловкость": 11, "Телосложение": 14, "Интеллект": 10, "Мудрость": 13, "Харизма": 9},
-        "skills": {"Скрытность": 2, "Ближний бой": 1},
     })
     assert c.attrs["Выносливость"] >= 14
     assert c.attrs["Разум"] == 10
     assert c.attrs["Воля"] >= 13
     assert c.attrs["Влияние"] == 9
-    assert c.skills == {}
 
 
 def test_rule_mode_locked_in_model():
     s = mk("система")
-    assert s.rule_mode == "система" and "без бросков" in s.system_prompt
+    assert s.rule_mode == "система" and "посчитает шанс" in s.system_prompt

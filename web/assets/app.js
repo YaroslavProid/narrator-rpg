@@ -390,13 +390,17 @@ function renderScene(s) {
 }
 function container() { return turnEl || story; }
 function addLine(cls, text) { const p = document.createElement('p'); p.className = cls; p.textContent = text; container().appendChild(p); return p; }
+function playerHTML(text) {
+  // *действие* plain, «речь» kept, (мысли) dimmed — the same markup the server parses
+  return esc(text).replace(/\(([^)]+)\)/g, '<span class="th">($1)</span>').replace(/\*([^*]+)\*/g, '<span class="act">$1</span>');
+}
 function startTurn(n, text, rewindable = true, animate = true) {
   removeWriting();
   const t = document.createElement('div'); t.dataset.turn = n;
   if (animate) t.className = 'ink-in';
   t.innerHTML = `<div class="turn"><span class="ln"></span><svg class="dia" aria-hidden="true"><use href="#diamond"/></svg><span class="lb">ХОД ${roman(n)}</span><svg class="dia" aria-hidden="true"><use href="#diamond"/></svg><span class="ln"></span>${rewindable ? '<button class="rb">↶ откатить к этому ходу</button>' : ''}</div>
     ${text == null ? `<div class="e-player e-world">${QUILL()}<span class="h">Мир продолжает жить…</span></div>`
-                   : `<div class="e-player">${QUILL()}<span class="h">${esc(text)}</span></div>`}`;
+                   : `<div class="e-player">${QUILL()}<span class="h">${playerHTML(text)}</span></div>`}`;
   const rb = t.querySelector('.rb');
   if (rb) rb.onclick = async () => {
     if (busy) return;
@@ -547,8 +551,28 @@ function setBusy(b) {
 function updateTitle(s) { if (s && scene) setTitle(scene.title, `${s.rule_mode === 'd20' ? 'd20' : 'Система'} · ход ${roman(s.turn) || 0}`); }
 
 /* ============ game: actions ============ */
+/* how unmarked text is meant: act / say / think (+ whisper); the server parses the markup this produces */
+let inputMode = LS.get('imode', 'act'), whisper = false;
+const PLACEHOLDER = { act: 'Что вы делаете?..', say: 'Что вы говорите?..', think: 'О чём вы думаете?..' };
+function paintModes() {
+  $$('[data-imode]').forEach(b => { const on = b.dataset.imode === inputMode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+  const w = $('[data-whisper]'); w.classList.toggle('on', whisper); w.setAttribute('aria-checked', whisper);
+  inp.placeholder = whisper && inputMode !== 'think' ? 'Что вы шепчете?..' : PLACEHOLDER[inputMode];
+}
+$$('[data-imode]').forEach(b => b.onclick = () => { inputMode = b.dataset.imode; LS.set('imode', inputMode); paintModes(); inp.focus(); });
+$('[data-whisper]').onclick = () => { whisper = !whisper; paintModes(); inp.focus(); };
+function markInput(t) {
+  if (/^(система|system|\/)/i.test(t)) return t;                  // commands go as typed
+  if (inp.dataset.advice) return /[*«»"„“()]/.test(t) ? t : `«${t}»`;   // a companion's turn: the words are advice
+  const marked = /[*«»"„“()]/.test(t);
+  if (inputMode === 'think') return marked ? t : `(${t})`;
+  if (inputMode === 'say') return (whisper ? '*шёпотом* ' : '') + (marked ? t : `«${t}»`);
+  return whisper && !/шеп|шёп/i.test(t) ? `*шёпотом* ${t}` : t;
+}
+paintModes();
+
 function send(text) {
-  const t = (text ?? inp.value).trim();
+  const t = text != null ? text.trim() : markInput(inp.value.trim());
   if (!t || busy) return;
   if (!wsSend({ type: 'input', text: t })) return;
   if (text == null) { inp.value = ''; autosize(); }
@@ -710,14 +734,18 @@ function memberSheet(state, c, info) {
       <span class="kd">${esc(kd)}</span>${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`;
   };
   const item = i => {
-    const sub = [i.equipped && 'надето', i.damage && 'урон ' + i.damage, i.armor && 'броня +' + i.armor, !i.damage && !i.armor && i.kind !== 'предмет' && i.kind].filter(Boolean).join(' · ');
+    const eff = ITEM_EFFECT[i.effect];
+    const sub = [i.equipped && 'надето', i.damage && 'урон ' + i.damage, i.armor && 'броня +' + i.armor,
+                 eff && eff + POWER_WORD[i.power || 2], !eff && !i.damage && !i.armor && i.kind !== 'предмет' && i.kind].filter(Boolean).join(' · ');
     const wearable = i.damage || i.armor || i.slot;
-    const act = wearable ? (i.equipped ? ['Снять', 'сними'] : ['Надеть', 'экипируй']) : ['Использовать', 'используй'];
+    let btn = '';
+    if (hero && wearable) btn = `<button class="tbtn" data-cmd="${i.equipped ? 'сними' : 'экипируй'} ${esc(i.name)}">${i.equipped ? 'Снять' : 'Надеть'}</button>`;
+    else if (hero && i.effect === 'damage') btn = `<button class="tbtn" data-pre="Система, используй ${esc(i.name)} на ">Бросить…</button>`;
+    else if (hero && i.effect) btn = `<button class="tbtn" data-cmd="используй ${esc(i.name)}">Использовать</button>`;
     return `<div><span style="font-weight:600">${esc(i.name)}</span>${sub ? `<br><span class="sub">${esc(sub)}</span>` : ''}</div>
-      <div style="color:var(--ink-soft)">×${i.qty}</div><div>${hero ? `<button class="tbtn" data-cmd="${act[1]} ${esc(i.name)}">${act[0]}</button>` : ''}</div>`;
+      <div style="color:var(--ink-soft)">×${i.qty}</div><div>${btn}</div>`;
   };
   const cond = c.conditions || [];
-  const mult = info.exp_mult || 1;
   return `
     <div style="display:flex;align-items:center;gap:16px">
       <span class="oval" aria-hidden="true" style="color:${hero ? 'var(--rubric-hi)' : inkOf(c.name)}">${esc(initial(c.name))}</span>
@@ -729,7 +757,7 @@ function memberSheet(state, c, info) {
     </div>
     ${info.filling ? `<p class="writing" style="margin:0;font-size:16px">${QUILL('var(--ink)', 22, 26).replace('<svg', '<svg class="quill"')}Летописец дописывает карточку<span class="dot1">.</span><span class="dot2">.</span><span class="dot3">.</span></p>` : ''}
     <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', c.hp, c.max_hp, 'hp')}${gauge('Мана', c.mp, c.max_mp, 'mp')}${gauge('Опыт', c.exp, c.exp_next, 'xp')}
-      ${mult > 1 ? `<span class="sub">опыт ×${String(mult).replace('.', ',')} — догоняет героя</span>` : ''}</div>
+</div>
     ${!hero && c.description ? `<p style="margin:0;font-size:16px;line-height:1.5">${esc(c.description)}</p>` : ''}
     <section><h2 class="sh">Атрибуты</h2>${attrTable(c.attrs, d20)}
       ${c.attr_points ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:16px">
@@ -743,9 +771,34 @@ function memberSheet(state, c, info) {
     ${hero ? '' : `<div style="text-align:center"><button class="tbtn" data-dismiss="${esc(c.name)}">Отпустить из отряда</button></div>`}`;
 }
 
+const ITEM_EFFECT = { heal: 'лечение', mana: 'восстановление маны', cure: 'противоядие', damage: 'урон по цели', buff: 'усиление' };
+const POWER_WORD = { 1: ' (слабое)', 2: '', 3: ' (сильное)', 4: ' (великое)' };
+
+/* whose turn it is in a fight; on a companion's turn the input becomes advice */
+function paintTurn(state) {
+  const bar = $('#turnbar'), cb = state.combat || {};
+  if (!cb.active || !(cb.order || []).length) { bar.hidden = true; inp.dataset.advice = ''; paintModes(); return; }
+  const cur = state.characters[(cb.order[cb.current] || {}).id] || {};
+  bar.hidden = false;
+  if (cb.awaiting) {
+    const c = state.characters[cb.awaiting] || {};
+    bar.innerHTML = `<span><b style="color:${inkOf(c.name)}">Ход ${esc(c.name)}</b> · раунд ${cb.round}. Посоветуйте, что сделать, — или пусть решает сама.</span>
+      <button class="tbtn" id="bSelfDecide">Пусть решает сама</button>`;
+    inp.dataset.advice = c.name;
+    inp.placeholder = `Совет для ${c.name}…`;
+    $('#bSelfDecide').onclick = () => { if (!busy && wsSend({ type: 'continue' })) { stick = true; setBusy(true); } };
+  } else {
+    inp.dataset.advice = '';
+    paintModes();
+    bar.innerHTML = cur.is_player ? `<span><b>Ваш ход</b> · раунд ${cb.round}</span>`
+                                  : `<span>Ход: ${esc(cur.name || '?')} · раунд ${cb.round}</span>`;
+  }
+}
+
 function renderSheet(state) {
   if (!state) return;
   st = state;
+  paintTurn(state);
   const p = state.characters[state.player_id]; if (!p) return;
   const d20 = state.rule_mode === 'd20';
   $('#vitals').innerHTML = `${esc(p.hp)} / ${esc(p.max_hp)}<span class="mini"><i style="width:${pct(p.hp, p.max_hp)}%"></i></span>`;
@@ -777,7 +830,7 @@ function renderSheet(state) {
     const down = c.hp === 0;
     const acts = [];
     if (!seen) acts.push(`<button class="tbtn" data-cmd="осмотри ${esc(c.name)}">Осмотр</button>`);
-    if (kind === 'other' && !down) acts.push(full ? '<span class="sub">отряд полон</span>' : `<button class="tbtn" data-pre="${esc(c.name)}, пойдёшь со мной? Предлагаю присоединиться к моему отряду. ">Позвать в отряд</button>`);
+    if (kind === 'other' && !down) acts.push(full ? '<span class="sub">отряд полон</span>' : `<button class="tbtn" data-pre="«${esc(c.name)}, пойдёшь со мной? Предлагаю присоединиться к моему отряду.»">Позвать в отряд</button>`);
     return `<div class="near${down ? ' down' : ''}"><span class="oval sm" aria-hidden="true" style="color:${inkOf(c.name)}">${esc(initial(c.name))}</span>
       <div class="bd"><div class="hd"><span class="npc" style="color:${inkOf(c.name)}">${esc(c.name || '?')}</span>${down ? '<span class="note">повержен(а)</span>' : seen && kind !== 'party' ? '<span class="note">осмотрен(а)</span>' : ''}</div>
       ${rv.kind ? `<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">${esc(c.kind || 'вид неизвестен')}</span>` : '<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">вид неизвестен · характеристики скрыты</span>'}

@@ -1,0 +1,110 @@
+"""What the player actually did this turn: act, speak (aloud / whisper / shout) or only think.
+Markup: *действие*, «речь» or "речь", (мысли) / ((мысли)). Unmarked text is speech when an action declares
+speaking («*говорю шёпотом* …»), thoughts when it declares thinking, otherwise an action. The UI mode
+switch wraps unmarked text into «…» or (…) before sending, so the stored input stays self-describing."""
+from __future__ import annotations
+import re
+from dataclasses import dataclass, field
+
+SPEAK = re.compile(r"говор|скаж|сказа|шеп|шёп|крич|крикн|\bору\b|спрашива|спрош|отвеча|бормоч|\bзову\b|оклика|"
+                   r"обращаюсь|произнош|вслух|рявка|цеж|шипл|окликн|отвеча", re.I)
+WHISPER = re.compile(r"шеп|шёп|тихо|вполголоса|едва слышно|на ухо", re.I)
+SHOUT = re.compile(r"крич|крикн|\bору\b|громко|во весь голос|рявка|орать", re.I)
+THINK = re.compile(r"дума|мысл|про себя|размышля|прикидыва|мелькает", re.I)
+# a starred aside that only says HOW the hero speaks/thinks is not a physical action
+MANNER_ONLY = re.compile(r"^(я\s+)?(тихо\s+|громко\s+)?(говорю|шепчу|шепчу\s+\S+|говорю\s+шёпотом|говорю\s+шепотом|"
+                         r"кричу|думаю|думаю\s+про\s+себя|про\s+себя|шёпотом|шепотом|вслух)\b[^.!?]{0,20}$", re.I)
+
+
+@dataclass
+class Intent:
+    actions: list[str] = field(default_factory=list)
+    speech: list[str] = field(default_factory=list)
+    thoughts: list[str] = field(default_factory=list)
+    manner: str = "вслух"          # вслух | шёпотом | громко
+
+    @property
+    def acts(self) -> bool:
+        """True when the hero physically does something this turn (checks/attacks for the hero allowed)."""
+        return bool(self.actions)
+
+    def spoken(self) -> str:
+        return " ".join(self.speech).strip()
+
+
+def _clean(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip(" \t\n-—–,.;:") if s else ""
+
+
+def _words(s: str) -> str:
+    """Spoken words: keep the punctuation, drop a leading dialogue dash."""
+    return re.sub(r"\s+", " ", s).strip().lstrip("—–-").strip() if s else ""
+
+
+def parse(text: str | None) -> Intent | None:
+    if text is None:
+        return None
+    t = text.strip()
+    it = Intent()
+    acts = [m.group(1) for m in re.finditer(r"\*([^*]+)\*", t)]
+    t = re.sub(r"\*[^*]+\*", " ", t)
+    quoted = [m.group(1) or m.group(2) or m.group(3) for m in re.finditer(r"«([^»]+)»|\"([^\"]+)\"|„([^“”]+)[“”]", t)]
+    t = re.sub(r"«[^»]+»|\"[^\"]+\"|„[^“”]+[“”]", " ", t)
+    thoughts = [m.group(1) or m.group(2) for m in re.finditer(r"\(\(([^)]+)\)\)|\(([^)]+)\)", t)]
+    t = re.sub(r"\(\([^)]+\)\)|\([^)]+\)", " ", t)
+    rest_raw = re.sub(r"\s+", " ", t).strip()
+    rest = _clean(t)
+
+    declares_speech = any(SPEAK.search(a) for a in acts)
+    declares_thought = any(THINK.search(a) and not SPEAK.search(a) for a in acts)
+    for a in acts:
+        if WHISPER.search(a):
+            it.manner = "шёпотом"
+        elif SHOUT.search(a):
+            it.manner = "громко"
+        if MANNER_ONLY.match(_clean(a)):
+            continue                      # «*я говорю шепотом*» — manner, not a deed
+        it.actions.append(_clean(a))
+    it.speech += [_words(q) for q in quoted if _words(q)]
+    it.thoughts += [_clean(x) for x in thoughts if _clean(x)]
+    if rest:
+        if declares_thought and not declares_speech:
+            it.thoughts.append(rest)
+        elif declares_speech or rest_raw.startswith(("—", "–", "-")) or quoted:
+            it.speech.append(_words(rest_raw))
+        else:
+            it.actions.append(rest)
+    return it
+
+
+def for_narrator(it: Intent | None) -> str:
+    """The [ИГРОК] block: deed, words and thoughts kept apart so the narrator does not mix them up."""
+    if it is None:
+        return "[ПРОДОЛЖИТЬ] Игрок ничего не делает. Мир и персонажи действуют сами: продвинь сцену на шаг."
+    lines = ["[ИГРОК]"]
+    if it.actions:
+        lines.append("Действие героя: " + "; ".join(it.actions))
+    if it.speech:
+        who = {"шёпотом": "шёпотом — слышат только те, кто вплотную рядом (спутники)",
+               "громко": "громко — слышат все вокруг"}.get(it.manner, "вслух")
+        lines.append(f"Речь героя ({who}): «" + " ".join(it.speech) + "»")
+    if it.thoughts:
+        lines.append("Мысли героя (никто не слышит, NPC на них не реагируют): " + " ".join(it.thoughts))
+    if not it.actions:
+        lines.append("Герой ничего не делает руками — только " + ("говорит" if it.speech else "думает")
+                     + ". Не превращай это в действие и не делай проверок за героя.")
+    return "\n".join(lines)
+
+
+def hint(it: Intent | None) -> str:
+    """Short per-turn reminder (in the turn tail, so the cached prompt prefix stays intact)."""
+    if it is None:
+        return "Герой бездействует: без проверок и атак за него; NPC и мир действуют сами."
+    parts = []
+    if it.speech:
+        parts.append("на речь героя отвечают репликами (<speak>), проверка на слова не нужна")
+    if it.thoughts:
+        parts.append("мысли героя никто не слышит")
+    if it.actions:
+        parts.append("проверка (<roll>) — только если действие рискованное и исход неочевиден")
+    return ("Как читать ввод: " + "; ".join(parts) + ".") if parts else ""

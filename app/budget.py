@@ -8,10 +8,6 @@ TIERS = {  # tier: (speaks, step_tokens, words, max_steps, hint)
     "крупный": (5, 420, 170, 6, "Масштаб сцены: крупный — можно развёрнуто, несколько голосов."),
 }
 ORDER = ["камерный", "обычный", "крупный"]
-COMBAT = r"атак|\bбь[юё]|\bбей|удар[июяь]|выпад|выхватыва|стреля|выстрел|напада|драк|\bбой\b|\bбо[юяе]\b|сраж|заклинан|парир|уклоня|рублю|колю|замахива"
-TRAVEL = r"иду в|идём|отправля|еду|скачу|выхожу|вхожу|захожу|прибыва|спускаюсь|поднимаюсь|направля|добира|плыв|въезжа|покидаю|дорог[ау]|путь|переход|новое место"
-DIALOG = r"спрашива|говорю|отвечаю|шепчу|шепну|киваю|улыбаюсь|сказ|прошу|«|\"|\?"
-CROWD = r"толп|площад|рынок|ярмар|\bпир\b|собрани|армия|отряд"
 
 
 @dataclass
@@ -30,26 +26,27 @@ class Budget:
 
 
 def classify(text: str | None, npcs: int, introduced_last: bool, last_tier: str | None, combat_ongoing: bool):
+    """Scene size from the parsed input (deed / speech / thoughts), the fight and how many NPCs are involved."""
+    from . import intent as I
     reasons = []
-    t = (text or "").lower()
     if text is None:
         lvl = 1 if npcs >= 2 or combat_ongoing else 0
         reasons.append("продолжить")
-        if combat_ongoing: lvl = 2; reasons.append("идёт бой")
+        if combat_ongoing:
+            lvl = 2; reasons.append("идёт бой")
         return lvl, reasons
+    it = I.parse(text)
     lvl = 1
-    combat = bool(re.search(COMBAT, t)); travel = bool(re.search(TRAVEL, t)); dialog = bool(re.search(DIALOG, t))
-    if combat: lvl = 2; reasons.append("бой")
-    if travel: lvl = 2; reasons.append("перемещение/новое место")
-    if re.search(CROWD, t): lvl = 2; reasons.append("толпа")
-    if introduced_last: lvl = max(lvl, 2) if npcs >= 2 else max(lvl, 1); reasons.append("новый персонаж")
-    if npcs >= 4: lvl = max(lvl, 2); reasons.append(f"{npcs} NPC")
-    if not (combat or travel) and dialog and npcs <= 1 and len(t) < 160:
-        lvl = 0; reasons.append("диалог один на один")
-    elif not (combat or travel) and dialog and len(t) < 80 and lvl < 2:
-        lvl = min(lvl, 1); reasons.append("короткая реплика")
-    if len(t) > 300 and lvl < 2: lvl += 1; reasons.append("длинный ввод")
-    if npcs == 0 and lvl > 1 and not travel: lvl = 1
+    if combat_ongoing:
+        lvl = 2; reasons.append("бой")
+    if introduced_last:
+        lvl = max(lvl, 2 if npcs >= 2 else 1); reasons.append("новый персонаж")
+    if npcs >= 4:
+        lvl = max(lvl, 2); reasons.append(f"{npcs} NPC")
+    if not it.acts and not combat_ongoing:
+        lvl = 0 if npcs <= 1 else min(lvl, 1); reasons.append("только речь/мысли")
+    if it.acts and len(" ".join(it.actions)) > 220 and lvl < 2:
+        lvl += 1; reasons.append("развёрнутое действие")
     return lvl, reasons
 
 

@@ -1,0 +1,163 @@
+"""Honest turn order, foes by threat, the companion's turn with advice, consumables, inspection and leaving."""
+import asyncio
+from app import combat as C, mechanics as M
+from app.engine import TurnEngine, create_scene
+from app.models import Item
+from tests.test_engine_fake import FakeLLM
+
+
+def mk():
+    return create_scene("Т", "лес", {"name": "Ярен", "attrs": {"Сила": 14, "Ловкость": 14}},
+                        [{"name": "Сильфа", "kind": "лучница", "personality": "резкая, осторожная"}],
+                        "система", seed=11)
+
+
+def ch(s, n):
+    return M.resolve_character(s, n)
+
+
+def run(s, outs, text, eng=None):
+    eng = eng or TurnEngine(FakeLLM([]))
+    eng.llm.outs = list(outs); eng.llm.prompts = []; ev = []
+
+    async def emit(m): ev.append(m)
+    asyncio.run(eng.handle(s, text, emit))
+    return eng, ev
+
+
+def rolls(ev):
+    return [m["text"] for m in ev if m["type"] == "segment" and m["kind"] == "roll"]
+
+
+def test_threat_gives_a_real_sheet_scaled_to_the_hero():
+    s = mk(); s.player.level = 4
+    eng, ev = run(s, [('<introduce name="Волк" count="2" side="враг" threat="опасный" desc="серый волк"', "/>"), ("<end", "/>")],
+                  "*оглядываюсь*")
+    w = ch(s, "Волк 1")
+    assert w.threat == "опасный" and w.level == 5 and w.max_hp == 18 + 5 * 5
+    assert w.attrs["Сила"] > w.attrs["Разум"] and any(i.name == "Клыки и когти" and i.equipped for i in w.inventory)
+    boss = ch(s, "Сильфа"); boss.attrs["Ловкость"] = 15   # a built character is never overwritten
+    assert C.apply_threat(s, boss, "босс") == "" and boss.max_hp == 20
+
+
+def test_foes_act_by_code_and_the_turn_comes_back_to_the_hero():
+    s = mk()
+    eng, ev = run(s, [('<introduce name="Разбойник" side="враг" desc="с коротким мечом"', "/>"),
+                      ('<attack who="Ярен" target="Разбойник"', "/>"), ("<end", "/>")], "*бью разбойника*")
+    assert s.combat.active
+    lines = rolls(ev)
+    assert any(l.startswith("⚔️ Ярен → Разбойник") for l in lines)
+    assert any(l.startswith("⚔️ Разбойник →") for l in lines)          # the foe answered on its own turn
+    assert C.current(s).is_player                                       # and it is the hero's turn again
+
+
+def test_out_of_turn_actions_are_refused():
+    s = mk(); foe = ch(s, "Сильфа"); M.leave_party(s, foe)
+    eng, ev = run(s, [('<introduce name="Бандит" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    b = ch(s, "Бандит")
+    C.start_combat(s, [b.id])
+    s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == b.id)
+    eng, ev = run(s, [('<attack who="Бандит" target="Ярен"', "/>"), ("<end", "/>")], "*держу оборону*", eng)
+    assert "ходы врагов считает Система" in eng.llm.prompts[1]
+
+
+def test_companion_turn_asks_for_advice_and_may_refuse():
+    s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
+    sil.inventory.append(C.ensure_item_stats(Item(name="Лук", equipped=True)))
+    eng, ev = run(s, [('<introduce name="Разбойник" side="враг"', "/>"), ("<end", "/>")], "*смотрю на него*")
+    foe = ch(s, "Разбойник"); C.mark_foe(s, foe); foe.hp = foe.max_hp = 999      # he must survive until her turn
+    eng, ev = run(s, [('<attack who="Ярен" target="Разбойник"', "/>"), ("<end", "/>")], "*бью разбойника*", eng)
+    for _ in range(3):                                                 # run the order until the companion's turn comes
+        if s.combat.awaiting == sil.id:
+            break
+        eng, ev = run(s, [('<attack who="Ярен" target="Разбойник"', "/>"), ("<end", "/>")], "*бью снова*", eng)
+    assert s.combat.awaiting == sil.id
+    eng, ev = run(s, [('<speak who="Сильфа" intent="отказаться — бред"', "/>"), ("Это бред.", "»"),
+                      ('<attack who="Сильфа" target="Разбойник" weapon="лук"', "/>"), ("<end", "/>")],
+                  "прыгай в костёр", eng)
+    p = eng.llm.prompts[0]
+    assert "[ХОД СПУТНИКА]" in p and "Совет героя: «прыгай в костёр»" in p and "отказывается" in p
+    assert any(l.startswith("⚔️ Сильфа → Разбойник") for l in rolls(ev))
+
+
+def test_companion_who_did_nothing_holds_and_the_fight_goes_on():
+    s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
+    eng, ev = run(s, [('<introduce name="Разбойник" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    C.start_combat(s, [ch(s, "Разбойник").id])
+    s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == sil.id); s.combat.awaiting = sil.id
+    eng, ev = run(s, [("<narrate>Тишина.</narrate><end", "/>")], None, eng)
+    assert any("выжидает" in m.get("text", "") for m in ev if m["type"] == "segment")
+    assert C.current(s) is None or C.current(s).id != sil.id
+
+
+def test_fight_ends_when_foes_fall_even_with_a_companion_standing():
+    s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
+    run(s, [('<introduce name="Крыса" side="враг" threat="слабый"', "/>"), ("<end", "/>")], "*жду*")
+    rat = ch(s, "Крыса"); C.start_combat(s, [rat.id]); rat.hp = 0
+    text, more = C.knockout(s, rat, "")
+    assert not s.combat.active and any("БОЙ ОКОНЧЕН" in m for m in more)
+
+
+def test_inspection_cooldown_and_nothing_new():
+    s = mk(); b = ch(s, "Сильфа"); M.leave_party(s, b); b.reveal.kind = b.reveal.attrs = False
+    s.player.attrs["Воля"] = 3                                         # fail on purpose
+    out = M.inspect_target(s, "осмотри Сильфу")
+    if "ничего нового" in out:
+        again = M.inspect_target(s, "осмотри Сильфу")
+        assert "Попробуй через" in again
+    b.reveal.kind = b.reveal.attrs = b.reveal.abilities = True
+    assert "уже известно всё" in M.inspect_target(s, "осмотри Сильфу")
+
+
+def test_consumables_have_effects():
+    s = mk(); p = s.player
+    for n in ("Малое зелье лечения", "Бомба", "Противоядие", "Эликсир маны"):
+        p.inventory.append(C.ensure_item_stats(Item(name=n)))
+    assert [i.effect for i in p.inventory[-4:]] == ["heal", "damage", "cure", "mana"]
+    assert p.inventory[-4].power == 1
+    p.hp = 5
+    out = M.run_system_command(s, *M.parse_system_command("Система, используй Малое зелье лечения"))
+    assert p.hp > 5 and "HP" in out
+    assert "нужно бросить в цель" in M.run_system_command(s, *M.parse_system_command("Система, используй Бомба"))
+    foe = ch(s, "Сильфа"); hp0 = foe.hp
+    out = M.run_system_command(s, *M.parse_system_command("Система, брось Бомба на Сильфу"))
+    assert foe.hp < hp0 and not any(i.name == "Бомба" for i in p.inventory)
+    p.conditions = []; C.apply_condition(p, "кровотечение", 3, 2)
+    M.run_system_command(s, *M.parse_system_command("Система, используй Противоядие"))
+    assert not p.conditions
+
+
+def test_quiet_npcs_are_asked_about_and_only_neutral_ones_leave():
+    s = mk(); sil = ch(s, "Сильфа"); M.leave_party(s, sil)
+    s.turn = 6; sil.last_active_turn = 1
+    eng = TurnEngine(FakeLLM([]))
+    assert eng.quiet_npcs(s) == ["Сильфа"]
+    sil.side = "hostile"
+    s.settings.inactive_leave = 2
+    assert eng.prune_inactive(s) == [] and eng.quiet_npcs(s) == []
+
+
+def test_companion_waits_for_advice_and_no_blows_at_the_fallen():
+    s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
+    eng, ev = run(s, [('<introduce name="Разбойник" side="враг"', "/>"), ("<end", "/>")], "*смотрю*")
+    foe = ch(s, "Разбойник"); C.start_combat(s, [foe.id])
+    s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == sil.id); s.combat.awaiting = sil.id
+    # the hero's turn text arrives while Сильфа's turn is pending -> it is advice, and only now she may act
+    eng, ev = run(s, [('<attack who="Сильфа" target="Разбойник"', "/>"), ("<end", "/>")], "стреляй ему в ноги", eng)
+    assert any(l.startswith("⚔️ Сильфа → Разбойник") for l in rolls(ev))
+    # her action in someone else's turn (not after advice) is refused
+    s.combat.active = True; s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == sil.id)
+    s.combat.awaiting = ""
+    eng.comp_turn[s.id] = ""
+    assert "после совета" in eng.out_of_turn(s, sil, "attack")
+    foe.hp = 0
+    s.combat.current = next(i for i, o in enumerate(s.combat.order) if o.id == s.player_id)
+    eng, ev = run(s, [('<attack who="Ярен" target="Разбойник"', "/>"), ("<end", "/>")], "*добиваю*", eng)
+    assert "уже повержен" in eng.llm.prompts[1]
+
+
+def test_numbered_newcomer_is_not_mistaken_for_an_existing_one():
+    s = mk()
+    eng, ev = run(s, [('<introduce name="Волк 1" desc="серый"', "/>"), ('<introduce name="Волк 2" desc="поменьше"', "/>"),
+                      ("<end", "/>")], "*смотрю*")
+    assert ch(s, "Волк 1") is not ch(s, "Волк 2") and ch(s, "Волк 2").name == "Волк 2"

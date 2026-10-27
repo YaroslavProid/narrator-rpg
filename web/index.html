@@ -165,7 +165,14 @@
                   <button class="qbtn" id="bSys" aria-expanded="false">Система ▾</button>
                   <div class="menu" id="sysMenu" role="menu" hidden></div>
                 </div>
-                <span class="qhint">Enter — записать · Shift+Enter — новая строка · ↑ — прошлая запись</span>
+                <span class="qhint">*действие* · «речь» · (мысли) · Enter — записать</span>
+              </div>
+              <div class="turnbar" id="turnbar" hidden></div>
+              <div class="modes-row" role="radiogroup" aria-label="Как понимать текст без разметки">
+                <button class="imode" data-imode="act" role="radio">Действие</button>
+                <button class="imode" data-imode="say" role="radio">Речь</button>
+                <button class="imode" data-imode="think" role="radio">Мысли</button>
+                <button class="imode whisper" data-whisper role="checkbox" title="Говорить шёпотом — слышат только спутники рядом">шёпотом</button>
               </div>
               <div class="wrow">
                 <label for="inp" class="sr">Действие героя</label>

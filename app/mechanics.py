@@ -194,6 +194,26 @@ def rng(scene: Scene) -> random.Random:
     return r
 
 
+def chance(scene: Scene, p: float) -> tuple[bool, int]:
+    """«Система» mode: stats decide the odds, the world still surprises. Clamped to 5-95%."""
+    p = max(0.05, min(0.95, p))
+    return rng(scene).random() < p, round(p * 100)
+
+
+CHANCE_STEP = 0.05     # «Система»: every attribute point is ±5 percentage points of a chance
+
+
+def check_chance(attr_val: int, dc: int) -> float:
+    """50% at equal attribute and difficulty; each point of difference moves it by 5 percentage points."""
+    return 0.5 + CHANCE_STEP * (attr_val - dc)
+
+
+def power_mult(attr_val: int) -> float:
+    """«Система»: how strongly an attribute amplifies damage, healing and shields — +5% per point above 10
+    (−5% below). A multiplier keeps attributes meaningful when abilities reach 4d8-5d8, where a flat +2 would vanish."""
+    return max(0.7, min(2.0, 1 + 0.05 * (int(attr_val) - 10)))
+
+
 def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
     """Soft attribute check. Small gaps barely matter; large gaps dominate.
     d20: d20 + soft_weight(attr, 10) vs DC.
@@ -218,15 +238,11 @@ def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
         res["text"] = (f"Проверка «{attr}» ({who.name}): 1d20({d}) {w:+d} = {total} "
                        f"против {dc} — {'успех' if ok else 'провал'}{tag} [{res['soft']}, {attr} {aval}].")
     else:
-        # Non-dice: compare character rating to DC as target rating via soft gaps
-        gap_w = soft_weight(aval, dc)
-        if gap_w == 0:
-            ok = aval >= dc  # near-equal: slight lean
-        else:
-            ok = gap_w > 0
-        res.update(die=None, total=aval, success=ok, crit=False, fumble=False, mod=gap_w, soft=soft_label(gap_w))
-        res["text"] = (f"Проверка «{attr}» ({who.name}, без броска): {attr} {aval} против {dc} — "
-                       f"{'успех' if ok else 'провал'} [{res['soft']}].")
+        # «Система»: no die shown — the attribute against the difficulty gives a chance
+        ok, pct = chance(scene, check_chance(aval, dc))
+        res.update(die=None, total=aval, success=ok, crit=False, fumble=False, chance=pct)
+        res["text"] = (f"Проверка «{attr}» ({who.name}): {attr} {aval} против сложности {dc} — шанс {pct}% — "
+                       f"{'успех' if ok else 'провал'}.")
     return res
 
 
@@ -248,7 +264,7 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list, note: str = "
         c.exp_next = int(c.exp_next * 1.5)
         c.max_hp += 5; c.hp = c.max_hp
         c.max_mp += 3; c.mp = c.max_mp
-        c.attr_points += 2; c.ability_points += 1; c.skill_points = c.ability_points
+        c.attr_points += 2; c.ability_points += 1
         extra = " Очко способностей тратится в Книге путей." if c.is_player or c.id in scene.party else ""
         msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
                     f"(«Система, распредели {'' if c.is_player else c.name.split()[0] + ' '}Сила +1»).{extra}")
@@ -263,34 +279,49 @@ def in_party(scene: Scene, c: Character | None) -> bool:
     return bool(c) and (c.is_player or c.id in scene.party)
 
 
-def catchup_mult(scene: Scene, c: Character) -> float:
-    """Companions behind the hero learn faster: base**level_gap (each level costs x1.5 more), capped."""
-    if c.is_player:
-        return 1.0
-    gap = max(0, scene.player.level - c.level)
-    return min(config.EXP_CATCHUP_MAX, config.EXP_CATCHUP_BASE ** gap)
+# Rewards are a share of what THIS character needs for the next level, so pacing stays the same at level 5 and
+# at level 50 (no grind), and beating something far stronger is worth several levels at once.
+THREAT_SHARE = {"слабый": 0.04, "обычный": 0.08, "опасный": 0.15, "элита": 0.30, "босс": 0.60}
+GAP_UP, GAP_DOWN = 1.4, 0.6        # per level the foe is above / below the character
+TURN_CAP = 0.20                    # individual EXP (checks, hits) per character per turn, share of the level
 
 
-def award_exp(scene: Scene, c: Character, base: int, msgs: list, capped: bool = True) -> int:
-    """EXP for a party member. `capped`: the per-turn cap (LIMITS exp_turn) applies to the base amount so the
-    narrator cannot farm EXP; system-decided rewards (defeated foes) pass capped=False."""
-    if base <= 0 or not in_party(scene, c):
+def gap_factor(foe_level: int, level: int) -> float:
+    g = foe_level - level
+    return GAP_UP ** g if g > 0 else GAP_DOWN ** (-g)
+
+
+def share_exp(c: Character, share: float) -> int:
+    return max(1, round(c.exp_next * share)) if share > 0 else 0
+
+
+def check_share(dc: int) -> float:
+    """Only hard checks teach anything; easy ones give nothing (so the narrator gains nothing by asking for rolls)."""
+    return 0.05 if dc >= 18 else 0.03 if dc >= 15 else 0.0
+
+
+HIT_SHARE = 0.01
+
+
+def kill_share(c: Character, foe: Character) -> float:
+    return THREAT_SHARE.get(foe.threat or "обычный", 0.08) * gap_factor(foe.level, c.level)
+
+
+def award_exp(scene: Scene, c: Character, amount: int, msgs: list, capped: bool = True, note: str = "") -> int:
+    """EXP for a party member. `capped`: individual EXP per turn is limited to TURN_CAP of the level, so the
+    narrator cannot farm it; system-decided rewards (defeated foes) pass capped=False."""
+    if amount <= 0 or not in_party(scene, c):
         return 0
     if capped:
+        cap = max(1, round(c.exp_next * TURN_CAP))
         got = scene.turn_exp if c.is_player else scene.turn_exp_by.get(c.id, 0)
-        base = max(0, min(base, LIMITS["exp_turn"] - got))
+        amount = max(0, min(amount, cap - got))
         if c.is_player:
-            scene.turn_exp = got + base
+            scene.turn_exp = got + amount
         else:
-            scene.turn_exp_by[c.id] = got + base
-    mult = catchup_mult(scene, c)
-    amount = round(base * mult)
-    grant_exp(scene, c, amount, msgs, f" (×{mult:g} — догоняет героя)" if mult > 1 and amount else "")
+            scene.turn_exp_by[c.id] = got + amount
+    grant_exp(scene, c, amount, msgs, note)
     return amount
-
-
-def kill_exp(foe: Character) -> int:
-    return config.EXP_KILL + 5 * max(0, foe.level - 1)
 
 
 def join_party(scene: Scene, c: Character) -> tuple[bool, str]:
@@ -309,7 +340,7 @@ def join_party(scene: Scene, c: Character) -> tuple[bool, str]:
     c.side = "party"
     c.level, c.exp, c.exp_next = 1, 0, 100
     c.attr_points = 0
-    c.ability_points = c.skill_points = 1   # like the hero: a first step on a path of the player's choice
+    c.ability_points = 1   # like the hero: a first step on a path of the player's choice
     c.reveal.kind = c.reveal.attrs = c.reveal.abilities = True
     c.last_active_turn = scene.turn
     if c.id not in scene.present:
@@ -425,24 +456,63 @@ def unequip_item(c: Character, name: str) -> str:
     return f"⟦ СИСТЕМА ⟧ Снято: {it.name}."
 
 
-def use_item(scene: Scene, c: Character, name: str) -> str:
+MANA = {1: 4, 2: 8, 3: 12, 4: 18}
+CURABLE = ("кровотечение", "отравление", "яд", "болезнь")
+
+
+def item_effect_text(it: Item) -> str:
+    """Human-readable effect for the sheet: «лечит ~9 HP», «урон ~10, нужна цель»."""
+    from .magic import DAMAGE, HEAL, POTENCY
+    from . import combat as C
+    L = max(1, it.power or 1)
+    def avg(e):
+        n, sides, b = C.parse_dice(e)
+        return int(max(1, n) * (sides + 1) / 2 + 0.5) + b
+    return {"heal": f"лечит ~{avg(HEAL[L])} HP", "mana": f"+{MANA[min(L, 4)]} MP",
+            "cure": "снимает кровотечение и яд", "damage": f"урон ~{avg(DAMAGE[L])}, нужна цель",
+            "buff": f"усиление +{POTENCY[L]} на 3 раунда"}.get(it.effect, "")
+
+
+def use_item(scene: Scene, c: Character, name: str, target_name: str = "") -> str:
+    """Consumables act through code on the same scale as abilities (no MP cost; one use spends one item)."""
+    from . import combat as C
+    from .magic import DAMAGE, HEAL, POTENCY
     it = find_item(c, name)
     if not it:
         return f"⟦ СИСТЕМА ⟧ Нет предмета «{name}»."
-    n = it.name.lower()
-    msgs = []
-    if any(k in n for k in ("зелье", "лечение", "бандаж", "аптеч", "Potion", "heal")):
-        heal = min(10, c.max_hp - c.hp)
-        c.hp += heal; msgs.append(f"{c.name}: +{heal} HP ({c.hp}/{c.max_hp})")
-    elif any(k in n for k in ("мана", "эссенц")):
-        gain = min(8, c.max_mp - c.mp)
-        c.mp += gain; msgs.append(f"{c.name}: +{gain} MP")
+    C.ensure_item_stats(it)
+    L = max(1, it.power or 1)
+    if it.effect == "heal":
+        v, _ = C.amount(scene, HEAL[L])
+        heal = min(v, c.max_hp - c.hp); c.hp += heal
+        msg = f"{c.name}: +{heal} HP ({c.hp}/{c.max_hp})"
+    elif it.effect == "mana":
+        gain = min(MANA[min(L, 4)], c.max_mp - c.mp); c.mp += gain
+        msg = f"{c.name}: +{gain} MP ({c.mp}/{c.max_mp})"
+    elif it.effect == "cure":
+        gone = [x.name for x in c.conditions if x.name in CURABLE]
+        c.conditions = [x for x in c.conditions if x.name not in CURABLE]
+        msg = f"{c.name}: сняты {', '.join(gone)}" if gone else f"{c.name}: лечить нечего — эффект пропал впустую"
+    elif it.effect == "buff":
+        C.apply_condition(c, "усиление", turns=3, potency=POTENCY[L])
+        msg = f"{c.name}: усиление +{POTENCY[L]} к атаке и урону (3 раунда)"
+    elif it.effect == "damage":
+        tgt = resolve_character(scene, target_name) if target_name else None
+        if not tgt or tgt is c:
+            return f"⟦ СИСТЕМА ⟧ «{it.name}» нужно бросить в цель: «Система, используй {it.name} на Имя»."
+        v, _ = C.amount(scene, DAMAGE[L])
+        v, soak = C.absorb(tgt, v)
+        old = tgt.hp; tgt.hp = max(0, tgt.hp - v)
+        msg, more = C.knockout(scene, tgt, f"{c.name} → {tgt.name} («{it.name}»): урон {v}{soak}, HP {old}→{tgt.hp}/{tgt.max_hp}")
+        msg += ("\n" + "\n".join(more)) if more else ""
+        if in_party(scene, c) and not in_party(scene, tgt):
+            tgt.side = "hostile"
     else:
         return f"⟦ СИСТЕМА ⟧ «{it.name}» нельзя использовать напрямую (опишите действие рассказчику)."
     it.qty -= 1
     if it.qty <= 0:
         c.inventory.remove(it)
-    return "⟦ СИСТЕМА ⟧ " + "; ".join(msgs)
+    return "⟦ СИСТЕМА ⟧ " + msg
 
 
 def give_item(scene: Scene, giver: Character, name: str, receiver: Character) -> str:
@@ -498,10 +568,17 @@ def inspect_target(scene: Scene, rest: str) -> str:
         return f"⟦ СИСТЕМА ⟧ Нет персонажа «{name}»."
     if c.is_player:
         return "⟦ СИСТЕМА ⟧ Себя вы и так знаете — смотрите статус."
+    if c.reveal.kind and c.reveal.attrs and c.reveal.abilities:
+        return f"⟦ СИСТЕМА ⟧ О {c.name} уже известно всё, что можно увидеть со стороны."
+    wait = c.inspect_turn + 3 - scene.turn
+    if wait > 0:
+        return (f"⟦ СИСТЕМА ⟧ Ты уже присматривался к {c.name} — ничего нового сейчас не разглядеть. "
+                f"Попробуй через {wait} ход(а) или узнай о нём иначе.")
     # Soft observation check vs DC 12
     r = check(scene, scene.player, "Воля", 12)
     lines = ["### ⟦ СИСТЕМА · ОСМОТР ⟧", r["text"]]
     if not r["success"]:
+        c.inspect_turn = scene.turn
         lines.append(f"Ты не замечаешь о {c.name} ничего нового.")
         return "\n".join(lines)
     # Success: always kind; good margin also attrs; crit/colossal also abilities
@@ -603,7 +680,7 @@ def parse_system_command(text: str) -> tuple[str, str] | None:
     if any(k in r for k in ("инвент", "invent", "сумк", "предмет", "вещи")): return "inventory", r
     if any(k in r for k in ("экип", "надень", "надет", "equip", "вооруж")): return "equip", r
     if any(k in r for k in ("сними", "снят", "unequip")): return "unequip", r
-    if any(k in r for k in ("используй", "выпей", "примени", "use")): return "use", r
+    if any(k in r for k in ("используй", "выпей", "примени", "брось", "кинь", "use")): return "use", r
     if re.search(r"(?<![а-яё])(дай|отдай|передай)(?![а-яё])|\bgive\b", r): return "give", r   # not «выдай», «продай»
     if any(k in r for k in ("бой", "combat", "иниц")): return "combat", r
     if any(k in r for k in ("состоян", "эффект", "condition", "бафф", "дебафф")): return "conditions", r
@@ -649,7 +726,7 @@ def status_text(c: Character) -> str:
              " · ".join(f"{a} {v} ({amp(v):+d})" for a, v in c.attrs.items())]
     if c.conditions:
         lines.append("Состояния: " + ", ".join(f"{x.name}({x.turns_left})" for x in c.conditions))
-    if c.attr_points or c.skill_points:
+    if c.attr_points or c.ability_points:
         lines.append(f"Очки: атрибуты {c.attr_points}, способности {c.ability_points}")
     eq = [i for i in c.inventory if i.equipped]
     if eq:
@@ -675,9 +752,8 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         lines = [f"### ⟦ СИСТЕМА · ОТРЯД {len(party_ids(scene))}/{config.PARTY_MAX} ⟧"]
         for cid in party_ids(scene):
             c = scene.characters[cid]
-            mult = catchup_mult(scene, c)
             lines.append(f"- {c.name}{' (герой)' if c.is_player else ''}: ур. {c.level}, HP {c.hp}/{c.max_hp}, "
-                         f"EXP {c.exp}/{c.exp_next}" + (f", опыт ×{mult:g}" if mult > 1 else "")
+                         f"EXP {c.exp}/{c.exp_next}"
                          + (f", свободные очки: атрибуты {c.attr_points}, способности {c.ability_points}"
                             if c.attr_points or c.ability_points else ""))
         if len(party_ids(scene)) == 1:
@@ -726,8 +802,14 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         name = re.sub(r"сними|снят\w*|unequip", "", rest).strip()
         return unequip_item(p, name) if name else "⟦ СИСТЕМА ⟧ Укажите предмет."
     if cmd == "use":
-        name = re.sub(r"используй|выпей|примени|use", "", rest).strip()
-        return use_item(scene, p, name) if name else "⟦ СИСТЕМА ⟧ Укажите предмет."
+        name = re.sub(r"используй|выпей|примени|брось|кинь|use", "", rest).strip()
+        if not name:
+            return "⟦ СИСТЕМА ⟧ Укажите предмет."
+        target = ""
+        m = re.search(r"^(.*?)\s+(?:на|в|во)\s+(.+)$", name)
+        if m and not find_item(p, name):          # «бомбу на Волка»; an item literally named «… на …» still works
+            name, target = m.group(1).strip(), m.group(2).strip()
+        return use_item(scene, p, name, target)
     if cmd == "give":
         m = re.search(r"(?:дай|отдай|передай|give)\s+(.+?)\s+(?:персонажу\s+|герою\s+|npc\s+)?([А-Яа-яЁёA-Za-z][\w\- ]+)$", rest)
         if not m:

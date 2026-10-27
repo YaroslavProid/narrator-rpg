@@ -38,22 +38,30 @@ def test_party_limit_is_four_with_the_hero():
     assert M.leave_party(s, ch(s, "Борек"))[0] and M.join_party(s, ch(s, "Гвоздь"))[0]
 
 
-def test_catchup_multiplier_and_cap():
+def test_kill_reward_is_a_share_of_own_level_and_catches_up():
     s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
-    assert M.catchup_mult(s, sil) == 1.0
-    s.player.level = 3
-    assert M.catchup_mult(s, sil) == 1.5 ** 2
-    s.player.level = 9
-    assert M.catchup_mult(s, sil) == config.EXP_CATCHUP_MAX
+    foe = ch(s, "Гвоздь"); foe.level = 5; foe.threat = "обычный"
+    s.player.level, s.player.exp_next = 5, 506
+    hero = M.share_exp(s.player, M.kill_share(s.player, foe))
+    comp = M.share_exp(sil, M.kill_share(sil, foe))
+    assert hero == round(506 * 0.08)                              # same level: 8% of the hero's level
+    assert comp == round(100 * 0.08 * 1.4 ** 4)                   # 4 levels above the companion: x1.4^4
+    assert comp / sil.exp_next > hero / s.player.exp_next         # the one behind grows faster by itself
+    assert M.award_exp(s, ch(s, "Борек"), 10, []) == 0            # outsiders get nothing
+
+
+def test_beating_something_far_stronger_gives_several_levels():
+    s = mk(); p = s.player
+    boss = ch(s, "Гвоздь"); boss.threat = "босс"; boss.level = p.level + 5
     msgs = []
-    assert M.award_exp(s, sil, 10, msgs) == 40 and "догоняет" in msgs[0]
-    assert M.award_exp(s, ch(s, "Борек"), 10, []) == 0      # outsiders get nothing
+    M.award_exp(s, p, M.share_exp(p, M.kill_share(p, boss)), msgs, capped=False)
+    assert p.level >= 3, msgs
 
 
 def test_individual_exp_cap_per_character():
     s = mk(); sil = ch(s, "Сильфа"); M.join_party(s, sil)
     got = M.award_exp(s, sil, 150, [])
-    assert got == M.LIMITS["exp_turn"] and M.award_exp(s, sil, 10, []) == 0
+    assert got == round(sil.exp_next * M.TURN_CAP) and M.award_exp(s, sil, 10, []) == 0
     assert M.award_exp(s, s.player, 10, []) == 10           # the hero has his own cap
 
 
@@ -145,7 +153,8 @@ def test_kill_gives_exp_to_whole_party():
         if tw.hp == 0:
             break
     assert tw.hp == 0 and tw.side == "hostile"
-    assert s.player.exp >= M.kill_exp(tw) and sil.exp == M.kill_exp(tw)   # equal share, no catch-up at the same level
+    share = M.share_exp(sil, M.kill_share(sil, tw))
+    assert s.player.exp >= share and sil.exp == share     # same level: the same share of the level
 
 
 def test_pack_name_with_number_and_side_visible():
@@ -171,4 +180,4 @@ def test_invitation_reminds_narrator_about_join_tag():
     eng, llm, ev = run_turn(s, [("<narrate>Сильфа думает.</narrate><end", "/>")], "Сильфа, пойдёшь со мной? Предлагаю присоединиться к моему отряду.")
     assert '<join who="Сильфа"/>' in llm.prompts[0]
     eng, llm, ev = run_turn(s, [("<narrate>Тихо.</narrate><end", "/>")], "Осматриваю зал.")
-    assert "[ОТРЯД]" not in llm.prompts[0].split("[ИГРОК] Осматриваю зал.")[1]   # no nudge without an invitation
+    assert "[ОТРЯД]" not in llm.prompts[0].split("Действие героя: Осматриваю зал")[1]   # no nudge without an invitation

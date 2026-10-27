@@ -31,6 +31,7 @@ Embedding model (CPU, ~120 MB, not in git):
 ## Layout
     app/llm.py        llama-server /completion client (stream, cache_prompt, /slots wait, cache metrics)
     app/prompt.py     byte-exact Gemma 4 template rendering
+    app/intent.py     player input → deed / speech (aloud, whisper, shout) / thoughts: *действие* «речь» (мысли)
     app/protocol.py   tag protocol parser (<narrate>, <speak/>, <roll/>, <change/>, <introduce/>, <leave/>, <end/>), Cyrillic check
     app/mechanics.py  stats, checks (d20 / «система»), clamped deltas, levels, skill & name aliases, «Система, …» commands
     app/prompts.py    Russian system prompt (rendered once per scene), player message, [РЕПЛИКА] tail

@@ -6,9 +6,10 @@ RULES_D20 = ("Режим правил: d20. Когда исход действи
              "<roll skill=\"Атрибут\" dc=\"10-25\"/> и остановись. skill — одно из атрибутов "
              "(Сила, Ловкость, Выносливость, Воля, Разум, Влияние). Бросок и мягкий модификатор считает Система: "
              "небольшой разрыв почти не влияет, колоссальный — решает. Никогда не придумывай числа сам.")
-RULES_SYS = ("Режим правил: «Система» без бросков. Когда исход не очевиден, вставь "
-             "<roll skill=\"Атрибут\" dc=\"10-25\"/>: Система мягко сравнит атрибут с DC "
-             "(малый разрыв ≈ ничья/слабый перевес, большой — доминирует). Не придумывай результат сам.")
+RULES_SYS = ("Режим правил: «Система». Когда исход рискованного действия не очевиден, вставь "
+             "<roll skill=\"Атрибут\" dc=\"10-25\"/>: Система посчитает шанс из атрибута и сложности "
+             "(равные — 50%) и решит исход. Урон в бою фиксированный, но удар может не попасть. "
+             "Не придумывай результат сам.")
 
 
 def card_text(c: Character, full: bool = True) -> str:
@@ -59,7 +60,7 @@ def build_system(scene: Scene) -> str:
 <roll skill="Ловкость" dc="12"/> — проверка атрибута игрока (не «ближний бой»/«знания»).
 <reveal who="Имя" what="kind|attrs|abilities|all"/> — игрок что-то узнал об NPC (осмотр/расследование).
 <change who="Имя" hp="-5" mp="0" exp="10" add="предмет" remove="предмет"/> — изменение показателей (урон, лечение, опыт, находка, потеря). Указывай только нужные атрибуты.
-<introduce name="Имя" desc="внешность, характер, роль"/> — в сцену входит новый персонаж. Для противников добавь side="враг"; несколько одинаковых — count="3" (Система создаст «Имя 1», «Имя 2», «Имя 3», и дальше обращайся к ним по этим именам).
+<introduce name="Имя" desc="внешность, характер, роль"/> — в сцену входит новый персонаж. Противнику укажи угрозу: threat="слабый|обычный|опасный|элита|босс" (по силе в мире, Система задаст ему характеристики под уровень героя). Для противников добавь side="враг"; несколько одинаковых — count="3" (Система создаст «Имя 1», «Имя 2», «Имя 3», и дальше обращайся к ним по этим именам).
 <leave who="Имя"/> — персонаж уходит из сцены.
 <join who="Имя"/> — персонаж СОГЛАШАЕТСЯ вступить в отряд героя. Ставь только если он сам этого хочет (по характеру, выгоде, долгу); отказать — нормально, тогда просто покажи отказ через speak. В отряде не больше четырёх вместе с героем — лимит проверит Система.
 <part who="Имя"/> — спутник покидает отряд (обида, предательство, своя дорога).
@@ -111,11 +112,28 @@ def build_system(scene: Scene) -> str:
     return s
 
 
-def player_message(scene: Scene, state: str, text: str | None, hint: str = "", memories: list | None = None) -> str:
-    if text is None:
-        act = "[ПРОДОЛЖИТЬ] Игрок ничего не делает. Мир и персонажи действуют сами: продвинь сцену на шаг."
-    else:
-        act = f"[ИГРОК] {text.strip()}"
+def companion_turn(c: Character, advice: str) -> str:
+    """A companion's turn in a fight: the hero may advise; the companion decides in character."""
+    acts = ", ".join(a.name for a in c.abilities if a.kind == "active") or "нет"
+    head = (f"[ХОД СПУТНИКА] В бою сейчас действует {c.name}" + (f" ({c.kind})" if c.kind else "") + "."
+            + (f" Характер: {c.personality}." if c.personality else ""))
+    tip = (f"Совет героя: «{advice}»." if advice else f"Герой промолчал — {c.name} решает сам(а).")
+    rule = (f"{c.name} решает в своём характере: разумный совет выполняет; бессмысленный или самоубийственный — "
+            f"отказывается (скажи это через <speak who=\"{c.name}\" …/>) и делает то, что считает верным. "
+            f"Поставь РОВНО ОДНО действие {c.name}: <attack who=\"{c.name}\" target=\"…\" weapon=\"…\"/> "
+            f"или <cast who=\"{c.name}\" spell=\"…\" target=\"…\"/> (активные способности: {acts}), затем <end/>. "
+            f"За героя не действуй.")
+    return "\n".join([head, tip, rule])
+
+
+def player_message(scene: Scene, state: str, text: str | None, hint: str = "", memories: list | None = None,
+                   companion: Character | None = None) -> str:
+    from . import intent as I
+    it = I.parse(text)
+    act = companion_turn(companion, it.spoken() if it else "") if companion else I.for_narrator(it)
+    how = "" if companion else I.hint(it)
+    if how:
+        hint = (hint + " " if hint else "") + how
     mem = ("[ВОСПОМИНАНИЯ] (из давнего прошлого, используй если уместно)\n" + "\n".join(f"- {m}" for m in memories) + "\n") if memories else ""
     return f"{state}\n{mem}{act}\n({hint + ' ' if hint else ''}Только по-русски, теги протокола. Не пиши за игрока.)"
 
@@ -129,17 +147,26 @@ def speak_block(scene: Scene, c: Character, intent: str, knows: list[str], playe
         if total + len(x) > 1600: break
         lines.insert(0, f"- {x}"); total += len(x)
     k = "\n".join(lines) or "- (ничего особенного)"
+    from . import intent as I
     pl = (player_line or "").strip()
-    spoken = re.sub(r"\*[^*]+\*", " ", pl).strip()
-    spoken = re.sub(r"\s+", " ", spoken)
+    it = I.parse(pl) if pl else None
+    spoken = it.spoken() if it else ""
     if spoken:
+        near = c.id in scene.party
+        if it.manner == "шёпотом" and not near:
+            hear = (f"Игрок что-то шепчет своим спутникам; слов ты не разбираешь. Можешь насторожиться, "
+                    f"но не отвечай на сказанное шёпотом.\n")
+        else:
+            how = {"шёпотом": "шёпотом, тебе на ухо", "громко": "громко"}.get(it.manner, "вслух")
+            hear = (
+                f"Игрок ТОЛЬКО ЧТО сказал ({how}): «{spoken[:300]}».\n"
+                f"Не утверждай, что он молчит. Ответь по смыслу его слов (можно коротко и в характере).\n"
+            )
+        if it.thoughts:
+            hear += "Мысли игрока тебе неизвестны — не отвечай на них.\n"
+    elif pl and it and it.actions:
         hear = (
-            f"Игрок ТОЛЬКО ЧТО сказал (ты это слышишь, если рядом): «{spoken[:300]}».\n"
-            f"Не утверждай, что он молчит. Ответь по смыслу его слов (можно коротко и в характере).\n"
-        )
-    elif pl:
-        hear = (
-            f"Игрок сейчас делает жест/действие без явной речи: {pl[:300]}.\n"
+            f"Игрок сейчас делает жест/действие без явной речи: {'; '.join(it.actions)[:300]}.\n"
             f"Можно спросить, что с ним, но не делай вид, будто он обязан был говорить вслух.\n"
         )
     else:
