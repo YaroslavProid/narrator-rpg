@@ -143,7 +143,7 @@ def player_message(scene: Scene, state: str, text: str | None, hint: str = "", m
     from . import intent as I
     it = I.parse(text)
     act = (companion_turn(companion, it.spoken() if it else "", "; ".join(it.actions) if it else "")
-           if companion else I.for_narrator(it))
+           if companion else I.for_narrator(it, text))
     how = "" if companion else I.hint(it)
     if how:
         hint = (hint + " " if hint else "") + how

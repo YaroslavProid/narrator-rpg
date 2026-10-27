@@ -89,3 +89,18 @@ def test_system_mode_fixed_damage_and_hit_chance():
 def test_d20_mode_still_rolls():
     s = mk("d20")
     assert len({C.amount(s, "1d8")[0] for _ in range(60)}) > 3
+
+
+def test_starred_thoughts_like_in_sillytavern():
+    it = I.parse("*интересно, он врёт?* «Где ты был вчера?»")
+    assert it.thoughts == ["интересно, он врёт?"] and not it.actions and it.speech == ["Где ты был вчера?"]
+    it = I.parse("*думаю, пора уходить* *встаю из-за стола*")
+    assert it.thoughts == ["думаю, пора уходить"] and it.actions == ["встаю из-за стола"]
+    it = I.parse("*говорю шёпотом* уходим")
+    assert it.speech == ["уходим"] and it.manner == "шёпотом" and not it.thoughts
+
+
+def test_the_narrator_sees_the_raw_input():
+    raw = "*хм, а если это ловушка* \"Открывай\""
+    block = I.for_narrator(I.parse(raw), raw)
+    assert "Как написал игрок: " + raw in block

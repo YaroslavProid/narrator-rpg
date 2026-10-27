@@ -402,13 +402,6 @@ main { position: relative; flex: 1; min-height: 0; display: flex; }
 .turnbar .tbtn { min-height: 34px; }
 .turnbar .reacts { display: flex; flex-wrap: wrap; gap: 6px; }
 .turnbar .reacts b { color: var(--rubric-hi); font-weight: 600; }
-.modes-row { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 2px 0 4px; }
-.imode { min-height: 32px; padding: 2px 12px; background: none; border: 1px solid var(--ink-faint); cursor: pointer;
-  font: 600 14px/1 var(--f-sc); letter-spacing: .08em; color: var(--ink-soft); border-radius: 2px; }
-.imode:hover { color: var(--ink); border-color: var(--ink-soft); }
-.imode.on { color: var(--paper); background: var(--rubric); border-color: var(--rubric); }
-.imode.whisper { margin-left: auto; font-style: italic; }
-.imode.whisper.on { background: var(--hover); color: var(--rubric); border-color: var(--rubric); }
 .e-player .h .th { color: var(--ink-soft); font-style: italic; opacity: .85; }
 .e-player .h .act { color: var(--ink-soft); }
 .wrow { display: flex; align-items: flex-end; gap: 16px; }

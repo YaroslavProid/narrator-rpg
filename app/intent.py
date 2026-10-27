@@ -1,7 +1,8 @@
 """What the player actually did this turn: act, speak (aloud / whisper / shout) or only think.
-Markup: *действие*, «речь» or "речь", (мысли) / ((мысли)). Unmarked text is speech when an action declares
-speaking («*говорю шёпотом* …»), thoughts when it declares thinking, otherwise an action. The UI mode
-switch wraps unmarked text into «…» or (…) before sending, so the stored input stays self-describing."""
+Markup as in SillyTavern-like front-ends: *действие или мысли*, «речь» or "речь", (мысли) / ((мысли)).
+A starred aside that reads as a thought («*интересно, он врёт?*», «*думаю, пора уходить*») is a thought.
+Unmarked text is speech when an action declares speaking («*говорю шёпотом* …»), thoughts when it declares
+thinking, otherwise an action. The narrator also gets the raw input and decides doubtful cases by meaning."""
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
@@ -11,6 +12,10 @@ SPEAK = re.compile(r"говор|скаж|сказа|шеп|шёп|крич|кр�
 WHISPER = re.compile(r"шеп|шёп|тихо|вполголоса|едва слышно|на ухо", re.I)
 SHOUT = re.compile(r"крич|крикн|\bору\b|громко|во весь голос|рявка|орать", re.I)
 THINK = re.compile(r"дума|мысл|про себя|размышля|прикидыва|мелькает", re.I)
+# a starred aside that is the hero's inner voice, not a deed
+THOUGHT_STAR = re.compile(r"^(я\s+)?(думаю|подумал[аи]?|мысленно|про\s+себя|интересно|надеюсь|наверное|похоже|кажется|"
+                          r"хм+|ну\s+и|чёрт|черт|а\s+что\s+если|что\s+если|неужели|может\s+быть|может,|только\s+бы|"
+                          r"лишь\s+бы|главное|ладно|так-?так|странно|почему|зачем|кто\s+же|что\s+же)\b", re.I)
 # a starred aside that only says HOW the hero speaks/thinks is not a physical action
 MANNER_ONLY = re.compile(r"^(я\s+)?(тихо\s+|громко\s+)?(говорю|шепчу|шепчу\s+\S+|говорю\s+шёпотом|говорю\s+шепотом|"
                          r"кричу|думаю|думаю\s+про\s+себя|про\s+себя|шёпотом|шепотом|вслух)\b[^.!?]{0,20}$", re.I)
@@ -100,8 +105,11 @@ def parse(text: str | None) -> Intent | None:
             it.manner = "шёпотом"
         elif SHOUT.search(a):
             it.manner = "громко"
-        if MANNER_ONLY.match(_clean(a)):
-            continue                      # «*я говорю шепотом*» — manner, not a deed
+        has_rest = bool(rest and re.search(r"\w", rest))
+        if MANNER_ONLY.match(_clean(a)) and (has_rest or len(_clean(a).split()) <= 2):
+            continue                      # «*я говорю шепотом*» + words after it — manner, not a deed
+        if THOUGHT_STAR.match(_clean(a)) and not SPEAK.search(a):
+            it.thoughts.append(_clean(a)); continue    # «*думаю, пора уходить*» — the thought itself
         if re.search(r"\w", a):
             it.actions.append(_clean(a))
     it.speech += [_words(q) for q in quoted if _words(q)]
@@ -125,11 +133,14 @@ def parse(text: str | None) -> Intent | None:
     return it
 
 
-def for_narrator(it: Intent | None) -> str:
-    """The [ИГРОК] block: deed, words and thoughts kept apart so the narrator does not mix them up."""
+def for_narrator(it: Intent | None, raw: str | None = None) -> str:
+    """The [ИГРОК] block: the raw input plus deed, words and thoughts kept apart so the narrator does not mix them up."""
     if it is None:
         return "[ПРОДОЛЖИТЬ] Игрок ничего не делает. Мир и персонажи действуют сами: продвинь сцену на шаг."
     lines = ["[ИГРОК]"]
+    if raw and raw.strip():
+        lines.append("Как написал игрок: " + raw.strip()[:600]
+                     + " (разбор ниже — подсказка; *…* бывает и действием, и мыслью — решай по смыслу)")
     if it.actions:
         lines.append("Действие героя: " + "; ".join(it.actions))
     if it.speech:

@@ -551,23 +551,13 @@ function setBusy(b) {
 function updateTitle(s) { if (s && scene) setTitle(scene.title, `${s.rule_mode === 'd20' ? 'd20' : 'Система'} · ход ${roman(s.turn) || 0}`); }
 
 /* ============ game: actions ============ */
-/* how unmarked text is meant: act / say / think (+ whisper); the server parses the markup this produces */
-let inputMode = LS.get('imode', 'act'), whisper = false;
-const PLACEHOLDER = { act: 'Что вы делаете?..', say: 'Что вы говорите?..', think: 'О чём вы думаете?..' };
-function paintModes() {
-  $$('[data-imode]').forEach(b => { const on = b.dataset.imode === inputMode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
-  const w = $('[data-whisper]'); w.classList.toggle('on', whisper); w.setAttribute('aria-checked', whisper);
-  inp.placeholder = whisper && inputMode !== 'think' ? 'Что вы шепчете?..' : PLACEHOLDER[inputMode];
-}
-$$('[data-imode]').forEach(b => b.onclick = () => { inputMode = b.dataset.imode; LS.set('imode', inputMode); paintModes(); inp.focus(); });
-$('[data-whisper]').onclick = () => { whisper = !whisper; paintModes(); inp.focus(); };
+/* the player writes freely (*действие или мысли*, «речь» / "речь", (мысли)); the server and the narrator read it */
+const PLACEHOLDER = 'Что вы делаете, говорите или думаете?..';
+function paintModes() { if (!inp.dataset.advice) inp.placeholder = PLACEHOLDER; }
 function markInput(t) {
   if (/^(система|system|\/)/i.test(t)) return t;                  // commands go as typed
   if (inp.dataset.advice) return /[*«»"„“()]/.test(t) ? t : `«${t}»`;   // a companion's turn: the words are advice
-  const marked = /[*«»"„“()]/.test(t);
-  if (inputMode === 'think') return marked ? t : `(${t})`;
-  if (inputMode === 'say') return (whisper ? '*шёпотом* ' : '') + (marked ? t : `«${t}»`);
-  return whisper && !/шеп|шёп/i.test(t) ? `*шёпотом* ${t}` : t;
+  return t;
 }
 paintModes();
 
