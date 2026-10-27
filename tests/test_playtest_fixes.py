@@ -122,3 +122,83 @@ def test_a_reaction_settled_after_the_narrator_is_described_next_turn():
     s, foe, _ = threatened()
     eng, ev = run(s, [("<narrate>Шорох.</narrate><end", "/>")], "*отскакиваю за телегу*")
     assert "Итог прошлого хода" in s.director_note
+
+
+# ---- round 2 ----
+def fight(s):
+    M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Мародёр" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    m = ch(s, "Мародёр"); C.start_combat(s, [m.id], first=s.player_id)
+    return m
+
+
+def test_combat_start_in_a_running_fight_is_silent_and_the_heros_blow_still_lands():
+    s = mk(); m = fight(s)
+    para = "Ты вскидываешь арбалет, ловишь мародёра в прицел и задерживаешь дыхание перед выстрелом."
+    eng, ev = run(s, [(f'<narrate>{para}</narrate><combat action="start" foes="Мародёр"', "/>"),
+                      (f'<narrate>{para}</narrate><attack who="Ярен" target="Мародёр"', "/>"), ("<end", "/>")],
+                  "*стреляю в мародёра*")
+    assert any(l.startswith("⚔️ Ярен → Мародёр") for l in rolls(ev))           # the repeat did not swallow the blow
+    assert not any(l.startswith("⟦ БОЙ") for l in rolls(ev))                   # no status block again
+
+
+def test_the_same_line_twice_is_refused():
+    s = mk()
+    outs = [('<speak who="Сильфа" intent="закричать Гони!"', "/>"), ("Гони!", "»")] * 4 + [("<end", "/>")]
+    eng, ev = run(s, outs, "*жду*")
+    said = [t for t in s.turns if t["role"] == "user" and t["content"].startswith("[СИСТЕМА: результат] Сильфа:")]
+    assert len(said) == 1 and any("уже сказал" in t["content"] for t in s.turns)
+
+
+def test_words_on_the_heros_turn_pass_it():
+    s = mk(); m = fight(s)
+    eng, ev = run(s, [('<speak who="Мародёр" intent="зарычать"', "/>"), ("Р-р!", "»"), ("<end", "/>")], "«Не подходи!»")
+    lines = rolls(ev)
+    assert any("выжидает" in l for l in lines) and any(l.startswith("⚠️ Мародёр") for l in lines)
+
+
+def test_fallen_foes_leave_the_scene_after_the_fight():
+    s = mk(); m = fight(s); m.hp = 0
+    C.knockout(s, m, "")
+    assert not s.combat.active and m.id not in s.present
+
+
+def test_doors_and_rumours_are_not_items():
+    s = mk(); p = s.player; n = len(p.inventory)
+    msgs, rej = M.apply_delta(s, p, {"add": "Открытая дверь склада, Гроссбух налогов"})
+    assert [i.name for i in p.inventory[n:]] == ["Гроссбух налогов"] and "не предмет" in rej[0]
+
+
+def test_taking_a_known_ability_spends_nothing():
+    from app import magic as G
+    s = mk(); p = s.player; p.ability_points = 3
+    G.ensure_core(s)
+    path = s.paths[0]; first = path.tiers[0].abilities[0].name
+    ok, msg = G.unlock_tier(s, p, path.name)
+    assert ok, msg
+    pts = p.ability_points
+    ok, msg = G.unlock_tier(s, p, first)
+    assert not ok and "уже есть" in msg and p.ability_points == pts
+
+
+def test_a_reaction_with_no_blow_forbids_describing_a_hit():
+    s = mk()
+    eng, ev = run(s, [('<react attr="Ловкость" difficulty="обычно" outcome="уклон" how="пригнуться"', "/>"), ("<end", "/>")],
+                  "*пригибаюсь за стол*")
+    assert "удара не было" in s.turns[-1]["content"] or any("удара не было" in t["content"] for t in s.turns)
+
+
+def test_a_blow_under_a_pending_blow_is_a_trade_whatever_the_narrator_says():
+    s, foe, _ = threatened()
+    eng, ev = run(s, [('<react attr="Ловкость" difficulty="обычно" outcome="уклон" how="сместиться"', "/>"),
+                      ("<end", "/>")], "*наношу удар ножом*")
+    assert any("размен" in l for l in rolls(ev)) and not any("сместиться" in l for l in rolls(ev))
+
+
+def test_the_counter_in_a_trade_uses_the_named_weapon():
+    from app.models import Item
+    s, foe, _ = threatened()
+    s.player.inventory += [C.ensure_item_stats(Item(name="Легкий арбалет", equipped=True)),
+                           C.ensure_item_stats(Item(name="Охотничий нож"))]
+    eng, ev = run(s, [("<narrate>Сталь.</narrate><end", "/>")], "*бью его ножом*")
+    assert any(l.startswith("↩ Контратака") and "Охотничий нож" in l for l in rolls(ev))

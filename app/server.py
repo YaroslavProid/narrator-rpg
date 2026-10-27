@@ -52,7 +52,7 @@ def get_scene(sid):
             raise HTTPException(404, "сцена не найдена")
         from . import magic as G, mechanics as M
         G.ensure_core(sc); M.sync_all(sc)
-        if any(m not in sc.system_prompt for m in ("<cast", "<escape", "Ходы врагов в бою считает", "размен")):   # older scenes: teach the narrator the new tags and rules
+        if any(m not in sc.system_prompt for m in ("<cast", "<escape", "Ходы врагов в бою считает", "размен", "описывай только попытку")):   # older scenes: teach the narrator the new tags and rules
             from . import prompts
             sc.system_prompt = prompts.build_system(sc)
         store.save_scene(sc)

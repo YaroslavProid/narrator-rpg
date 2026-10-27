@@ -527,6 +527,19 @@ def unlock_tier(scene: Scene, c: Character, path_name: str) -> tuple[bool, str]:
     if not p:
         return False, (f"Нет пути или способности «{path_name}». В Книге путей: "
                        + ", ".join(x.name for x in scene.paths) + ".")
+    want = M.norm(path_name)
+    ab_tier = next((t for t in p.tiers for a in t.abilities if want and (M.norm(a.name) == want or want in M.norm(a.name))),
+                   None)
+    if ab_tier is not None and _sim(path_name, p.name) < 0.6:
+        nt = next_tier(c, p)
+        known = next((a for a in c.abilities if M.norm(a.name) == want or want in M.norm(a.name)), None)
+        if known:
+            more = (f" Следующий ранг пути «{p.name}» — {ROMAN[nt.tier]}: " + ", ".join(a.name for a in nt.abilities)
+                    + f" («Система, открой путь {p.name}»).") if nt else ""
+            return False, f"«{known.name}» у {c.name} уже есть — очки не потрачены.{more}"
+        if nt and ab_tier.tier != nt.tier:
+            return False, (f"«{path_name}» — ранг {ROMAN[ab_tier.tier]} пути «{p.name}»; сначала ранг {ROMAN[nt.tier]}: "
+                           + ", ".join(a.name for a in nt.abilities) + ".")
     s = tier_status(scene, c, p)
     if s["done"]:
         return False, f"{c.name} уже прошёл(ла) весь путь «{p.name}»."

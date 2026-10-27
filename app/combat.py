@@ -418,6 +418,9 @@ def join_combat(scene: Scene, ids: list[str]) -> str:
 
 
 def end_combat(scene: Scene) -> str:
+    gone = {cid for cid in scene.present if (c := scene.characters.get(cid)) and not c.is_player
+            and c.side == "hostile" and c.hp <= 0 and cid not in scene.party}
+    scene.present = [cid for cid in scene.present if cid not in gone]
     scene.combat = Combat()
     return "⟦ БОЙ ОКОНЧЕН ⟧"
 
@@ -626,6 +629,17 @@ def leave_combat(scene: Scene, c: Character) -> str:
 
 STRIKE_WORDS = ("руб", "бью", "бьём", "удар", "колю", "режу", "стреля", "мета", "кида", "швыря", "атаку", "выпад",
                 "вонза", "пронза", "пинаю", "толка")
+
+
+def weapon_named(c: Character, text: str) -> str:
+    """The weapon the player named («ножом», «из арбалета»), by the stem of its first word; '' if none."""
+    t = (text or "").lower()
+    for i in c.inventory:
+        if i.kind == "оружие" or any(k in i.name.lower() for k in WEAPON_DEFAULTS):
+            for w in re.findall(r"[а-яё]{3,}", i.name.lower()):
+                if re.search(r"(?<![а-яё])" + w[:4], t):
+                    return i.name
+    return ""
 
 
 def strikes_instead(text: str) -> bool:

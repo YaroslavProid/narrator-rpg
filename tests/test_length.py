@@ -30,8 +30,8 @@ def test_prompts_carry_the_principle_without_hard_counts():
 def test_several_lines_in_one_turn_are_not_cut_early():
     s = mk(); eng = TurnEngine(FakeLLM([]))
     outs = []
-    for _ in range(4):
-        outs += [('<narrate>Шум.</narrate><speak who="Silfa" intent="болтать"', "/>"), ("Ну и ну.", "»")]
+    for topic in ("о погоде", "про долги трактирщика", "о новых постояльцах", "про цены на эль"):
+        outs += [(f'<narrate>Шум.</narrate><speak who="Silfa" intent="болтать {topic}"', "/>"), ("Ну и ну.", "»")]
     play(s, eng, outs + [("<narrate>Тишина.</narrate><end", "/>")], "Спрашиваю: «Как дела?»")
     assert s.stats[-1]["speaks"] == 4
     assert "реплик достаточно" not in eng.prompt(s)

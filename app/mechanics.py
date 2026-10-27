@@ -46,6 +46,8 @@ ATTR_ALIASES = {
     "int": "Разум", "wis": "Воля", "cha": "Влияние", "wil": "Воля",
 }
 FORBIDDEN_ITEM_WORDS = ["легендар", "божествен", "артефакт", "бессмерт", "всемогущ", "legendary", "artifact", "divine"]
+NOT_ITEMS = re.compile(r"^(открыт|приоткрыт|закрыт|запер)|двер[ьи]|ворот|окн[оа]\b|проход|доступ|информаци|сведени|"
+                       r"знани[ея]|слух[и]?\b|путь\b|дорог[аи]\b|возможност|помощ", re.I)
 LIMITS = {"hp_frac": 0.3, "mp_frac": 0.5, "exp_event": 50, "exp_turn": 100, "items_per_event": 2, "item_len": 40}
 
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
@@ -420,6 +422,8 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
     for a in adds[:LIMITS["items_per_event"]]:
         if len(a) > LIMITS["item_len"] or any(w in a.lower() for w in FORBIDDEN_ITEM_WORDS):
             rej.append(f"предмет «{a}» отклонён"); continue
+        if NOT_ITEMS.search(a):
+            rej.append(f"«{a}» — не предмет: двери, пути и сведения в инвентарь не кладутся"); continue
         ex = next((i for i in c.inventory if i.name.lower() == a.lower()), None)
         if ex: ex.qty += 1
         else:
