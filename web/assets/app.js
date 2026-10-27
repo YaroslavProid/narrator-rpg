@@ -13,6 +13,7 @@ const inkOf = name => `hsl(${hue(name)} 45% 72%)`;
 const initial = s => (String(s || '?').trim()[0] || '?').toUpperCase();
 const plural = (n, f) => f[(n % 10 === 1 && n % 100 !== 11) ? 0 : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? 1 : 2];
 const mod = v => { const m = Math.floor((v - 10) / 2); return m > 0 ? '+' + m : m < 0 ? '−' + -m : '+0'; };
+const mult = v => '×' + String(Math.round(100 * Math.max(0.7, Math.min(2, 1 + 0.05 * (v - 10)))) / 100).replace('.', ',');   // balance.mult
 const pct = (c, m) => m ? Math.max(0, Math.min(100, Math.round(100 * c / m))) : 0;
 function roman(n) {
   if (!(n > 0 && n < 4000)) return String(n);
@@ -261,7 +262,7 @@ function attrTable(attrs, d20) {
   const e = Object.entries(attrs || {}); if (!e.length) return '';
   let rows = '';
   for (let i = 0; i < e.length; i += 2) {
-    const c = ([k, v]) => `<td>${esc(k)}</td><td class="v">${v}</td><td class="m">${d20 ? mod(v) : ''}</td>`;
+    const c = ([k, v]) => `<td>${esc(k)}</td><td class="v">${v}</td><td class="m" title="${d20 ? 'модификатор' : 'усиление того, что опирается на атрибут'}">${d20 ? mod(v) : mult(v)}</td>`;
     rows += `<tr>${c(e[i])}<td style="width:16px"></td>${e[i + 1] ? c(e[i + 1]) : '<td></td><td></td><td></td>'}</tr>`;
   }
   return `<table class="attr"><tbody>${rows}</tbody></table>`;
@@ -727,27 +728,25 @@ function bookPane(state, sw) {
 }
 
 const EFF = { damage: 'урон', heal: 'лечение', shield: 'щит', buff: 'усиление', debuff: 'ослабление', control: 'оглушение' };
-const BON = { hp: 'макс. HP', mp: 'макс. MP', ac: 'КБ', melee: 'урон вблизи', ranged: 'урон издали', spell: 'сила чар', heal: 'сила лечения', init: 'инициатива' };
+const BON = { hp: 'макс. HP', mp: 'макс. MP', ac: 'броня', melee: 'урон вблизи', ranged: 'урон издали', spell: 'сила чар', heal: 'сила лечения', init: 'инициатива' };
 function abilStats(a) {
   if (a.kind === 'passive') return Object.entries(a.bonus || {}).filter(([, v]) => v).map(([k, v]) => `${BON[k] || k} +${v}`).join(', ');
   const e = EFF[a.effect];
   const pw = !e ? '' : a.effect === 'control' ? `${e} ${a.power} ход.` : (a.effect === 'buff' || a.effect === 'debuff') ? `${e} ${a.power}` : `${e} ${a.power}`;
-  return [pw && pw + (a.scale ? ' +' + a.scale : ''), a.mp ? a.mp + ' MP' : ''].filter(Boolean).join(' · ');
+  return [pw && pw + (a.scale ? ' ×' + a.scale : ''), a.mp ? a.mp + ' MP' : ''].filter(Boolean).join(' · ');
 }
 function memberSheet(state, c, info) {
   const d20 = state.rule_mode === 'd20', hero = c.id === state.player_id, fn = firstName(c.name);
   const whom = hero ? '' : fn + ' ';
   const abs = c.abilities || [];
   const abil = a => {
-    const kd = [a.kind === 'active' ? 'активная' : 'пассивная', abilStats(a) || a.cost, a.cooldown && 'перезарядка ' + a.cooldown].filter(Boolean).join(' · ');
+    const kd = [a.kind === 'active' ? 'активная' : 'пассивная', a.stats || abilStats(a) || a.cost, a.cooldown && 'перезарядка ' + a.cooldown].filter(Boolean).join(' · ');
     const use = a.kind === 'active' ? `<button class="tbtn" data-pre="${hero ? `Применяю «${esc(a.name)}»: ` : `${esc(fn)}, используй «${esc(a.name)}»: `}">${hero ? 'Применить' : 'Приказать'}</button>` : '';
     return `<div class="abil"><div class="top"><span class="nm">${esc(a.name)}</span>${use}</div>
       <span class="kd">${esc(kd)}</span>${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`;
   };
   const item = i => {
-    const eff = ITEM_EFFECT[i.effect];
-    const sub = [i.equipped && 'надето', i.damage && 'урон ' + i.damage, i.armor && 'броня +' + i.armor,
-                 eff && eff + POWER_WORD[i.power || 2], !eff && !i.damage && !i.armor && i.kind !== 'предмет' && i.kind].filter(Boolean).join(' · ');
+    const sub = [i.equipped && 'надето', i.text, !i.text && i.kind !== 'предмет' && i.kind].filter(Boolean).join(' · ');
     const wearable = i.damage || i.armor || i.slot;
     let btn = '';
     if (hero && wearable) btn = `<button class="tbtn" data-cmd="${i.equipped ? 'сними' : 'экипируй'} ${esc(i.name)}">${i.equipped ? 'Снять' : 'Надеть'}</button>`;
@@ -768,6 +767,7 @@ function memberSheet(state, c, info) {
     </div>
     ${info.filling ? `<p class="writing" style="margin:0;font-size:16px">${QUILL('var(--ink)', 22, 26).replace('<svg', '<svg class="quill"')}Летописец дописывает карточку<span class="dot1">.</span><span class="dot2">.</span><span class="dot3">.</span></p>` : ''}
     <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', c.hp, c.max_hp, 'hp')}${gauge('Мана', c.mp, c.max_mp, 'mp')}${gauge('Опыт', c.exp, c.exp_next, 'xp')}
+      ${c.weapon_line ? `<span class="sub">⚔ ${esc(c.weapon_line)} · 🛡 броня ${c.armor_total || 0}</span>` : ''}
 </div>
     ${!hero && c.description ? `<p style="margin:0;font-size:16px;line-height:1.5">${esc(c.description)}</p>` : ''}
     <section><h2 class="sh">Атрибуты</h2>${attrTable(c.attrs, d20)}
@@ -782,8 +782,6 @@ function memberSheet(state, c, info) {
     ${hero ? '' : `<div style="text-align:center"><button class="tbtn" data-dismiss="${esc(c.name)}">Отпустить из отряда</button></div>`}`;
 }
 
-const ITEM_EFFECT = { heal: 'лечение', mana: 'восстановление маны', cure: 'противоядие', damage: 'урон по цели', buff: 'усиление' };
-const POWER_WORD = { 1: ' (слабое)', 2: '', 3: ' (сильное)', 4: ' (великое)' };
 
 /* whose turn it is in a fight; on a companion's turn the input becomes advice */
 const REACT_TIP = {

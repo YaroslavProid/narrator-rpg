@@ -101,13 +101,13 @@ def test_public_char_hides_stats():
 
 def test_clamp_hp_mp_exp():
     s = mk(); p = s.player
-    msgs, rej = M.apply_delta(s, p, {"hp": "-50"})
-    assert p.hp == 20 - 6 and rej
-    M.apply_delta(s, p, {"hp": "+100"}); assert p.hp == 20
-    M.apply_delta(s, p, {"mp": "-9"}); assert p.mp == 5
-    _, rej = M.apply_delta(s, p, {"exp": "-5"}); assert p.exp == 0 and rej
-    M.apply_delta(s, p, {"exp": "500"}); assert p.exp == 50
-    M.apply_delta(s, p, {"exp": "80"}); assert s.turn_exp == 100 and p.level == 2 and p.exp == 0
+    full, mana = p.max_hp, p.max_mp
+    msgs, rej = M.apply_delta(s, p, {"hp": "-500"})
+    assert p.hp == full - round(full * 0.3) and rej                      # one event takes at most 30% of max HP
+    M.apply_delta(s, p, {"hp": "+500"}); assert p.hp == full
+    M.apply_delta(s, p, {"mp": "-500"}); assert p.mp == mana - mana // 2
+    _, rej = M.apply_delta(s, p, {"exp": "500"})
+    assert p.exp == 0 and rej                                            # EXP is the System's, never the narrator's
 
 
 def test_level_up_ability_points():
@@ -138,4 +138,4 @@ def test_migrate_old_attrs():
 
 def test_rule_mode_locked_in_model():
     s = mk("система")
-    assert s.rule_mode == "система" and "посчитает шанс" in s.system_prompt
+    assert s.rule_mode == "система" and "Шанс считает Система" in s.system_prompt and "точные числа" in s.system_prompt

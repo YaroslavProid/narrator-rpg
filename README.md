@@ -34,6 +34,9 @@ Embedding model (CPU, ~120 MB, not in git):
     app/intent.py     player input → deed / speech (aloud, whisper, shout) / thoughts: *действие* «речь» (мысли)
     app/protocol.py   tag protocol parser (<narrate>, <speak/>, <roll/>, <change/>, <introduce/>, <leave/>, <end/>), Cyrillic check
     app/mechanics.py  stats, checks (d20 / «система»), clamped deltas, levels, skill & name aliases, «Система, …» commands
+    app/balance.py    every number of the game economy: damage/heal/shield tables, weapons & armour, HP/MP formulas,
+                      threats, chances; attributes and level amplify (tune the game here)
+    app/migrate.py    on load: brings older saves (and their rewind snapshots) to the current version
     app/prompts.py    Russian system prompt (rendered once per scene), player message, [РЕПЛИКА] tail
     app/engine.py     turn loop (dynamic budget, character agents, witnesses, introduce, GBNF retry), memory
                       orchestration (archive/compress/re-warm, retrieval, context budget), rewind/regenerate

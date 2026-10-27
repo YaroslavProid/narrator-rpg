@@ -50,11 +50,8 @@ def get_scene(sid):
             sc = store.load_scene(sid)
         except FileNotFoundError:
             raise HTTPException(404, "сцена не найдена")
-        from . import magic as G, mechanics as M
-        G.ensure_core(sc); M.sync_all(sc)
-        if any(m not in sc.system_prompt for m in ("<cast", "<escape", "Ходы врагов в бою считает", "размен", "описывай только попытку")):   # older scenes: teach the narrator the new tags and rules
-            from . import prompts
-            sc.system_prompt = prompts.build_system(sc)
+        from .migrate import migrate
+        migrate(sc)                       # older saves: new numbers, new narrator rules
         store.save_scene(sc)
         state["scenes"][sid] = sc
     return state["scenes"][sid]

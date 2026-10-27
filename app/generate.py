@@ -5,6 +5,16 @@ import json, re
 from . import mechanics as M
 from .models import ATTRS, ATTR_MIGRATE
 
+# what an ability does is the AI's choice; how much is the code's (magic.card_ability, balance.py)
+ABILITY_PROPS = {
+    "name": {"type": "string", "minLength": 2, "maxLength": 40},
+    "kind": {"type": "string", "enum": ["active", "passive"]},
+    "effect": {"type": "string", "enum": ["damage", "heal", "shield", "buff", "debuff", "control", "utility"]},
+    "scale": {"type": "string", "enum": list(ATTRS)},
+    "bonus": {"type": "string", "enum": list(M.BONUS_KEYS)},
+    "description": {"type": "string", "maxLength": 200},
+}
+
 WORLD_SCHEMA = {
     "type": "object",
     "required": ["look", "tone", "places", "rules"],
@@ -45,13 +55,7 @@ SCENE_GEN_SCHEMA = {
                     "items": {
                         "type": "object",
                         "required": ["name", "kind"],
-                        "properties": {
-                            "name": {"type": "string", "minLength": 2, "maxLength": 40},
-                            "kind": {"type": "string", "enum": ["active", "passive"]},
-                            "description": {"type": "string", "maxLength": 200},
-                            "cost": {"type": "string", "maxLength": 40},
-                            "cooldown": {"type": "string", "maxLength": 40},
-                        },
+                        "properties": ABILITY_PROPS,
                     },
                 },
                 "inventory": {
@@ -90,13 +94,7 @@ SCENE_GEN_SCHEMA = {
                         "items": {
                             "type": "object",
                             "required": ["name", "kind"],
-                            "properties": {
-                                "name": {"type": "string"},
-                                "kind": {"type": "string", "enum": ["active", "passive"]},
-                                "description": {"type": "string"},
-                                "cost": {"type": "string"},
-                                "cooldown": {"type": "string"},
-                            },
+                            "properties": ABILITY_PROPS,
                         },
                     },
                 },
@@ -143,7 +141,7 @@ NPC (присутствуют в стартовой сцене):
 - setting: 2–4 абзаца — лор и стартовая ситуация в этом облике мира. Без мета-комментариев.
 - player.kind — кто герой в этом мире одним-двумя словами (сыщица, наёмник, вор-карманник), по его описанию.
 - player.attrs — все из списка [{attrs}] (не D&D-скиллы), по прошлому героя.
-- player.abilities — 2–5 ИМЕНОВАННЫХ способностей: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты. Способности не нарушают world.rules (нет магии в мире — нет и заклинаний).
+- player.abilities — 1–3 ИМЕНОВАННЫХ способности из прошлого героя: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты. Способности не нарушают world.rules (нет магии в мире — нет и заклинаний). Для каждой укажи, что она делает: активной — effect (damage — урон, heal — лечение, shield — защита, buff — усиление союзника, debuff — ослабление врага, control — враг теряет ход, utility — небоевое) и scale (атрибут, который её усиливает); пассивной — bonus (hp, mp, ac, melee, ranged, spell, heal, init). Чисел не пиши — их назначит Система. Дальше герой растёт по Книге путей.
 - inventory: 4–8 предметов, у каждого why — откуда он у героя. Снаряжение вытекает из прошлого и рода занятий героя и из эпохи мира (никаких мечей в киберпанке и пистолетов в средневековье); оружие — то, чем герой реально умеет пользоваться; деньги — в местной валюте; 1–2 предмета прямо связаны с завязкой (письмо, долговая расписка, ключ, знак гильдии). Без легендарного.
 - npcs: description, personality, speech, secrets, kind (вид/тип: наёмник, дух, торговец…), опционально abilities. Их тайны и цели связаны с завязкой.
 - Не используй английский. Сразу готовый JSON.
@@ -187,13 +185,13 @@ def _abilities(raw) -> list[dict]:
         kind = str(x.get("kind") or "passive").lower()
         if kind not in ("active", "passive"):
             kind = "passive"
-        out.append({
-            "name": name,
-            "kind": kind,
+        out.append({k: v for k, v in {
+            "name": name, "kind": kind,
+            "effect": str(x.get("effect") or "") if kind == "active" else "",
+            "scale": M.resolve_attr(str(x.get("scale") or "")) or "",
+            "bonus": str(x.get("bonus") or "") if kind == "passive" else "",
             "description": str(x.get("description") or "").strip()[:200],
-            "cost": str(x.get("cost") or "").strip()[:40],
-            "cooldown": str(x.get("cooldown") or "").strip()[:40],
-        })
+        }.items()})
         if len(out) >= 8:
             break
     return out

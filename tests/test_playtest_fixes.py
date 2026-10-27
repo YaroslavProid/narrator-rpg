@@ -36,7 +36,7 @@ def test_a_fall_through_change_is_a_real_fall_and_a_wiped_party_does_not_softloc
     run(s, [('<introduce name="Пёс" side="враг"', "/>"), ("<end", "/>")], "*жду*")
     s.player.hp = 3
     run(s, [('<change who="Ярен" hp="-5"', "/>"), ("<end", "/>")], "*падаю со скалы*")   # out of combat: allowed
-    assert s.player.hp == 0 and any(x.name == "оглушение" for x in s.player.conditions)
+    assert s.player.hp == 0 and not s.player.conditions      # down at 0 HP; no stun left to linger after healing
     s.player.hp = 5; s.player.conditions = []
     p = ch(s, "Пёс"); C.start_combat(s, [p.id])
     s.player.hp = 0

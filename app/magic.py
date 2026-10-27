@@ -10,23 +10,14 @@ MP, costs and the rank of the parent path each tier needs. Tier III also needs a
 
 Attributes do not gate paths; they amplify what the abilities do (see combat.cast, mechanics.sync_derived)."""
 from __future__ import annotations
-import difflib, json, math, re
-from . import mechanics as M, store
+import difflib, json, re
+from . import balance as B, mechanics as M, store
 from .models import ATTRS, Ability, Character, Lead, MagicPath, PathReq, PathTier, Scene
 from .prompt import render
 
 ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}
 
-# ---------------- one balance scale for everything (power level 1..6) ----------------
-DAMAGE = {1: "1d8", 2: "2d6", 3: "2d8", 4: "3d8", 5: "4d8", 6: "5d8"}
-HEAL = {1: "1d8", 2: "2d6", 3: "2d8", 4: "3d8", 5: "4d8", 6: "5d8"}
-SHIELD = {1: "1d6", 2: "2d4", 3: "2d6", 4: "3d6", 5: "4d6", 6: "5d6"}
-POTENCY = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 4}         # buff / debuff
-CONTROL = {1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3}         # rounds of stun
-MP_COST = {1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 8}
-PASSIVE = {"hp": lambda L: 3 * L, "mp": lambda L: 2 * L, "ac": lambda L: 1 if L < 4 else 2 if L < 6 else 3,
-           "init": lambda L: L}                          # melee/ranged/spell/heal: ceil(L/2)
-
+# the numbers of every power level live in balance.py (DAMAGE, HEAL, SHIELD, POTENCY, CONTROL, MP_COST, PASSIVE)
 CORE_COST = {1: 1, 2: 1, 3: 1, 4: 2, 5: 2}             # ability points per core rank
 BRANCH_COST = {1: 1, 2: 2, 3: 2}                       # per branch tier
 EFFECTS = ["damage", "heal", "shield", "buff", "debuff", "control", "utility"]
@@ -38,19 +29,57 @@ def make_ability(name: str, kind: str, effect: str, level: int, scale: str = "",
     L = max(1, min(6, level))
     if kind == "passive":
         key = bonus if bonus in M.BONUS_KEYS else "hp"
-        val = PASSIVE[key](L) if key in PASSIVE else math.ceil(L / 2)
-        return Ability(name=name[:40], kind="passive", effect="passive", bonus={key: val},
-                       description=description[:200], path=path, tier=tier)
+        return Ability(name=name[:40], kind="passive", effect="passive", bonus={key: B.PASSIVE[key](L)},
+                       description=description[:200], path=path, tier=tier, level=L)
     effect = effect if effect in EFFECTS else "utility"
-    power = {"damage": DAMAGE, "heal": HEAL, "shield": SHIELD}.get(effect, {}).get(L, "")
-    if effect in ("buff", "debuff"):
-        power = str(POTENCY[L])
-    elif effect == "control":
-        power = str(CONTROL[L])
-    mp = MP_COST[L] if effect != "utility" else max(1, MP_COST[L] // 2)
-    scale = M.resolve_attr(scale) or "" if effect != "utility" else ""
+    table = {"damage": B.DAMAGE, "heal": B.HEAL, "shield": B.SHIELD, "buff": B.POTENCY, "debuff": B.POTENCY,
+             "control": B.CONTROL}.get(effect)
+    power = str(table[L]) if table else ""
+    mp = B.MP_COST[L] if effect != "utility" else max(1, B.MP_COST[L] // 2)
+    scale = M.resolve_attr(scale) or ""
     return Ability(name=name[:40], kind="active", effect=effect, power=power, scale=scale, mp=mp, cost=f"{mp} MP",
-                   description=description[:200], path=path, tier=tier)
+                   description=description[:200], path=path, tier=tier, level=L)
+
+
+ABILITY_EFFECTS = EFFECTS + ["passive"]
+
+
+def card_ability(raw: dict, level: int = 1) -> Ability | None:
+    """An ability written by the AI for a card (world generation, the Director, a new companion). When it says what
+    the ability does (effect / scale / bonus), code gives it numbers of `level` like a path ability; otherwise it stays
+    a narrative trait the narrator describes."""
+    if not isinstance(raw, dict):
+        return None
+    name = re.sub(r"\s+", " ", str(raw.get("name") or "")).strip(" «»\"")[:40]
+    if len(name) < 2:
+        return None
+    kind = "active" if str(raw.get("kind") or "").lower() == "active" else "passive"
+    desc = str(raw.get("description") or "").strip()[:200]
+    eff = str(raw.get("effect") or "").lower()
+    if kind == "passive" and raw.get("bonus") in M.BONUS_KEYS:
+        return make_ability(name, "passive", "", level, "", raw["bonus"], desc)
+    if kind == "active" and eff in EFFECTS:
+        return make_ability(name, "active", eff, level, str(raw.get("scale") or ""), "", desc)
+    return Ability(name=name, kind=kind, description=desc, cooldown=str(raw.get("cooldown") or "").strip()[:40])
+
+
+def rebalance(paths: list[MagicPath], learned: list[Ability]) -> int:
+    """Put path abilities (the Book's templates and the ones characters learned) back on the current scale:
+    names, descriptions and kinds stay, the numbers follow balance.py. Returns how many abilities changed."""
+    levels = {}
+    for p in paths:
+        depth = max(p.parents.values()) if p.parents else 0
+        for t in p.tiers:
+            levels[(p.id, t.tier)] = t.tier if p.core else depth + t.tier
+    n = 0
+    for a in [a for p in paths for t in p.tiers for a in t.abilities] + [a for a in learned if a.path or a.level]:
+        L = levels.get((a.path, a.tier)) or a.level or a.tier or 1
+        bonus = next(iter(a.bonus), "") if a.bonus else ""
+        fresh = make_ability(a.name, a.kind, a.effect, L, a.scale, bonus, a.description, a.path, a.tier)
+        if (fresh.power, fresh.mp, fresh.bonus, fresh.level) != (a.power, a.mp, a.bonus, a.level):
+            a.power, a.mp, a.cost, a.bonus, a.level = fresh.power, fresh.mp, fresh.cost, fresh.bonus, fresh.level
+            n += 1
+    return n
 
 
 # id, name, description, ranks: (name, kind, effect, scale, bonus, description)

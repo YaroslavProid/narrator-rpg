@@ -1,6 +1,6 @@
 """Deterministic mechanics: soft attributes, named abilities, checks, deltas, 'Система' commands."""
 import difflib, math, random, re
-from . import config
+from . import balance as B, config
 from .models import ATTRS, ATTR_MIGRATE, Ability, Character, Item, Reveal, Scene
 
 # Soft-stat thresholds (attr vs baseline 10, or vs DC / opponent):
@@ -20,9 +20,6 @@ LEGACY_SKILL_ATTR = {
     "Восприятие": "Воля", "Проницательность": "Воля", "Выживание": "Воля", "Медицина": "Воля",
     "Убеждение": "Влияние", "Обман": "Влияние", "Запугивание": "Влияние", "Выступление": "Влияние",
 }
-# Keep SKILLS alias for any leftover imports (maps to attr name as "skill" label → attr)
-SKILLS = {k: v for k, v in LEGACY_SKILL_ATTR.items()}
-
 SKILL_ALIASES = {
     "athletics": "Атлетика", "strength": "Атлетика", "melee": "Ближний бой", "attack": "Ближний бой", "fight": "Ближний бой",
     "combat": "Ближний бой", "acrobatics": "Акробатика", "dexterity": "Акробатика", "stealth": "Скрытность", "sneak": "Скрытность",
@@ -48,7 +45,7 @@ ATTR_ALIASES = {
 FORBIDDEN_ITEM_WORDS = ["легендар", "божествен", "артефакт", "бессмерт", "всемогущ", "legendary", "artifact", "divine"]
 NOT_ITEMS = re.compile(r"^(открыт|приоткрыт|закрыт|запер|двер[ьи]\b|ворот|окн[оа]\b|проход|доступ|информаци|сведени|"
                        r"знани[ея]|слух[и]?\b|путь\b|дорог[аи]\b|возможност|помощ)", re.I)
-LIMITS = {"hp_frac": 0.3, "mp_frac": 0.5, "exp_event": 50, "exp_turn": 100, "items_per_event": 2, "item_len": 40}
+LIMITS = {"hp_frac": 0.3, "mp_frac": 0.5, "items_per_event": 2, "item_len": 40}
 
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u",
@@ -132,7 +129,7 @@ def resolve_character(scene: Scene, name: str, only_present: bool = False) -> Ch
     ids = scene.present if only_present else list(scene.characters)
     for cid in ids:
         c = scene.characters[cid]
-        keys = [c.name, c.name.split()[0], *c.aliases, translit(c.name), translit(c.name.split()[0])]
+        keys = [c.name, c.name.split()[0], translit(c.name), translit(c.name.split()[0])]
         for k in keys:
             pool.setdefault(norm(k), c)
     if n in {"игрок", "player", "герой", "ты", "you"}:
@@ -147,14 +144,8 @@ def resolve_character(scene: Scene, name: str, only_present: bool = False) -> Ch
 
 
 def mod(v: int) -> int:
-    """Legacy hard modifier — prefer soft_weight for checks; kept for AC/display."""
+    """d20 armour class from Ловкость."""
     return (v - 10) // 2
-
-
-def amp(v: int) -> int:
-    """Attribute as an amplifier of what a character does: damage, spell power, healing, HP/MP pools.
-    10 is the human norm (0); every 2 points above add +1, capped so stats never replace dice."""
-    return max(-2, min(5, (int(v) - 10) // 2))
 
 
 # passive ability bonus keys: hp, mp (pools), ac, melee, ranged (weapon damage), spell (spell power),
@@ -166,22 +157,31 @@ def passive_bonus(c: Character, key: str) -> int:
     return sum(int((a.bonus or {}).get(key, 0)) for a in c.abilities if a.kind == "passive")
 
 
+def max_pools(c: Character) -> tuple[int, int]:
+    """Max HP and MP from level, attributes and passives (foes: from their threat). Nothing else stores them."""
+    end, mind = c.attrs.get("Выносливость", 10), c.attrs.get("Разум", 10)
+    if c.threat in B.THREATS:                     # a foe: its threat decides, its attributes do not add HP
+        hp = round(B.THREATS[c.threat][1] * B.level_mult(c.level)) + passive_bonus(c, "hp")
+    else:
+        hp = B.HP_BASE + B.HP_LEVEL * (c.level - 1) + B.HP_PER_END * (end - 10) + passive_bonus(c, "hp")
+    mp = B.MP_BASE + B.MP_LEVEL * (c.level - 1) + B.MP_PER_MIND * (mind - 10) + passive_bonus(c, "mp")
+    return max(1, hp), max(0, mp)
+
+
 def sync_derived(c: Character) -> list[str]:
-    """Max HP/MP follow Выносливость/Разум and passive abilities. The bonus part is stored apart from the base
-    (level-ups), so it can be recomputed any time; HP/MP gained this way are granted, lost ones are clamped."""
+    """Bring max HP/MP in line with the formula: what is gained is granted, what is lost is clamped."""
     msgs = []
-    hp_b = 3 * amp(c.attrs.get("Выносливость", 10)) + passive_bonus(c, "hp")
-    mp_b = 2 * amp(c.attrs.get("Разум", 10)) + passive_bonus(c, "mp")
-    if hp_b != c.hp_bonus:
-        d = hp_b - c.hp_bonus
-        c.max_hp = max(1, c.max_hp + d); c.hp_bonus = hp_b
-        c.hp = max(0, min(c.max_hp, c.hp + max(0, d)))
-        msgs.append(f"{c.name}: макс. HP {c.max_hp - d}→{c.max_hp}")
-    if mp_b != c.mp_bonus:
-        d = mp_b - c.mp_bonus
-        c.max_mp = max(0, c.max_mp + d); c.mp_bonus = mp_b
-        c.mp = max(0, min(c.max_mp, c.mp + max(0, d)))
-        msgs.append(f"{c.name}: макс. MP {c.max_mp - d}→{c.max_mp}")
+    hp, mp = max_pools(c)
+    if hp != c.max_hp:
+        d = hp - c.max_hp
+        old, c.max_hp = c.max_hp, hp
+        c.hp = max(0, min(hp, c.hp + max(0, d)))
+        msgs.append(f"{c.name}: макс. HP {old}→{hp}")
+    if mp != c.max_mp:
+        d = mp - c.max_mp
+        old, c.max_mp = c.max_mp, mp
+        c.mp = max(0, min(mp, c.mp + max(0, d)))
+        msgs.append(f"{c.name}: макс. MP {old}→{mp}")
     return msgs
 
 
@@ -198,28 +198,13 @@ def rng(scene: Scene) -> random.Random:
 
 def chance(scene: Scene, p: float) -> tuple[bool, int]:
     """«Система» mode: stats decide the odds, the world still surprises. Clamped to 5-95%."""
-    p = max(0.05, min(0.95, p))
+    p = B.clamp_chance(p)
     return rng(scene).random() < p, round(p * 100)
 
 
-CHANCE_STEP = 0.05     # «Система»: every attribute point is ±5 percentage points of a chance
-
-
-def check_chance(attr_val: int, dc: int) -> float:
-    """50% at equal attribute and difficulty; each point of difference moves it by 5 percentage points."""
-    return 0.5 + CHANCE_STEP * (attr_val - dc)
-
-
-def power_mult(attr_val: int) -> float:
-    """«Система»: how strongly an attribute amplifies damage, healing and shields — +5% per point above 10
-    (−5% below). A multiplier keeps attributes meaningful when abilities reach 4d8-5d8, where a flat +2 would vanish."""
-    return max(0.7, min(2.0, 1 + 0.05 * (int(attr_val) - 10)))
-
-
 def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
-    """Soft attribute check. Small gaps barely matter; large gaps dominate.
-    d20: d20 + soft_weight(attr, 10) vs DC.
-    система: soft compare attr vs DC (as target rating), no die unless tied."""
+    """Attribute check. «Система»: 50% when the attribute equals the difficulty, ±5% per point of difference.
+    d20: d20 + soft_weight(attr, 10) vs DC (small gaps barely matter, large ones dominate)."""
     attr = resolve_check_attr(skill_raw)
     try:
         dc = int(re.sub(r"[^\d-]", "", str(dc_raw)) or 12)
@@ -228,7 +213,7 @@ def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
     dc = max(5, min(30, dc))
     aval = who.attrs.get(attr, 10)
     w = soft_weight(aval, 10)
-    res = {"who": who.name, "skill": attr, "attr": attr, "mod": w, "skill_lvl": 0, "dc": dc,
+    res = {"who": who.name, "skill": attr, "attr": attr, "mod": w, "dc": dc,
            "mode": scene.rule_mode, "attr_val": aval, "soft": soft_label(w)}
     if scene.rule_mode == "d20":
         d = rng(scene).randint(1, 20)
@@ -236,12 +221,11 @@ def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
         ok = d == 20 or (d != 1 and total >= dc)
         res.update(die=d, total=total, success=ok, crit=d == 20, fumble=d == 1)
         tag = " (критический успех!)" if d == 20 else " (критический провал!)" if d == 1 else ""
-        soft = f", {res['soft']}" if w != 0 or True else ""
         res["text"] = (f"Проверка «{attr}» ({who.name}): 1d20({d}) {w:+d} = {total} "
                        f"против {dc} — {'успех' if ok else 'провал'}{tag} [{res['soft']}, {attr} {aval}].")
     else:
         # «Система»: no die shown — the attribute against the difficulty gives a chance
-        ok, pct = chance(scene, check_chance(aval, dc))
+        ok, pct = chance(scene, B.check_chance(aval, dc))
         res.update(die=None, total=aval, success=ok, crit=False, fumble=False, chance=pct)
         res["text"] = (f"Проверка «{attr}» ({who.name}): {attr} {aval} против сложности {dc} — шанс {pct}% — "
                        f"{'успех' if ok else 'провал'}.")
@@ -264,11 +248,11 @@ def grant_exp(scene: Scene, c: Character, amount: int, msgs: list, note: str = "
         c.exp -= c.exp_next
         c.level += 1
         c.exp_next = int(c.exp_next * 1.5)
-        c.max_hp += 5; c.hp = c.max_hp
-        c.max_mp += 3; c.mp = c.max_mp
+        sync_derived(c)
+        c.hp, c.mp = c.max_hp, c.max_mp
         c.attr_points += 2; c.ability_points += 1
         extra = " Очко способностей тратится в Книге путей." if c.is_player or c.id in scene.party else ""
-        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP/MP восстановлены, +2 очка атрибутов, +1 очко способностей "
+        msgs.append(f"⟦ УРОВЕНЬ ПОВЫШЕН ⟧ {c.name}: уровень {c.level}! HP {c.max_hp}, MP {c.max_mp} — восстановлены; +2 очка атрибутов, +1 очко способностей "
                     f"(«Система, распредели {'' if c.is_player else c.name.split()[0] + ' '}Сила +1»).{extra}")
 
 
@@ -410,14 +394,8 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
         old = c.mp; c.mp = max(0, min(c.max_mp, c.mp + dmp))
         if c.mp != old:
             msgs.append(f"{c.name}: MP {old}→{c.mp}/{c.max_mp}")
-    dexp = _int(delta.get("exp", 0))
-    if dexp < 0:
-        rej.append("отрицательный опыт отклонён"); dexp = 0
-    allowed = max(0, min(LIMITS["exp_event"], LIMITS["exp_turn"] - scene.turn_exp))
-    if dexp > allowed:
-        rej.append(f"EXP {dexp} урезано до {allowed}"); dexp = allowed
-    scene.turn_exp += dexp
-    grant_exp(scene, c, dexp, msgs)
+    if _int(delta.get("exp", 0)):
+        rej.append("опыт назначает Система (за победы и трудные проверки), не рассказчик")
     adds = [a.strip() for a in re.split(r"[;,]", delta.get("add", "") or "") if a.strip()]
     for a in adds[:LIMITS["items_per_event"]]:
         if len(a) > LIMITS["item_len"] or any(w in a.lower() for w in FORBIDDEN_ITEM_WORDS):
@@ -459,11 +437,11 @@ def equip_item(c: Character, name: str) -> str:
     if it.kind not in ("оружие", "броня"):
         return f"⟦ СИСТЕМА ⟧ «{it.name}» нельзя экипировать."
     for other in c.inventory:
-        if other.equipped and other.slot == (it.slot or ("рука" if it.kind == "оружие" else "тело")):
+        if other is not it and other.equipped and other.slot == (it.slot or ("рука" if it.kind == "оружие" else "тело")):
             other.equipped = False
     it.equipped = True
-    extra = f", урон {it.damage}" if it.damage else (f", броня +{it.armor}" if it.armor else "")
-    return f"⟦ СИСТЕМА ⟧ Экипировано: {it.name}{extra}."
+    extra = item_effect_text(it)
+    return f"⟦ СИСТЕМА ⟧ Экипировано: {it.name}" + (f" ({extra})" if extra else "") + "."
 
 
 def unequip_item(c: Character, name: str) -> str:
@@ -474,57 +452,53 @@ def unequip_item(c: Character, name: str) -> str:
     return f"⟦ СИСТЕМА ⟧ Снято: {it.name}."
 
 
-MANA = {1: 4, 2: 8, 3: 12, 4: 18}
 CURABLE = ("кровотечение", "отравление", "яд", "болезнь")
 
 
 def item_effect_text(it: Item) -> str:
-    """Human-readable effect for the sheet: «лечит ~9 HP», «урон ~10, нужна цель»."""
-    from .magic import DAMAGE, HEAL, POTENCY
-    from . import combat as C
-    L = max(1, it.power or 1)
-    def avg(e):
-        n, sides, b = C.parse_dice(e)
-        return int(max(1, n) * (sides + 1) / 2 + 0.5) + b
-    return {"heal": f"лечит ~{avg(HEAL[L])} HP", "mana": f"+{MANA[min(L, 4)]} MP",
-            "cure": "снимает кровотечение и яд", "damage": f"урон ~{avg(DAMAGE[L])}, нужна цель",
-            "buff": f"усиление +{POTENCY[L]} на 3 раунда"}.get(it.effect, "")
+    """Human-readable effect for the sheet: «лечит 25 HP», «урон 18, нужна цель», «урон 9», «броня 2»."""
+    L = max(1, min(4, it.power or 1))
+    if it.effect:
+        return {"heal": f"лечит {B.POTION_HEAL[L]} HP", "mana": f"+{B.POTION_MANA[L]} MP",
+                "cure": "снимает кровотечение и яд", "damage": f"урон {B.BOMB[L]}, нужна цель",
+                "buff": f"усиление +{B.POTION_BUFF[L]} на 3 раунда"}.get(it.effect, "")
+    if it.damage:
+        return f"урон {it.damage}"
+    if it.armor:
+        return f"броня {it.armor}"
+    return ""
 
 
 def use_item(scene: Scene, c: Character, name: str, target_name: str = "") -> str:
     """Consumables act through code on the same scale as abilities (no MP cost; one use spends one item)."""
     from . import combat as C
-    from .magic import DAMAGE, HEAL, POTENCY
     it = find_item(c, name)
     if not it:
         return f"⟦ СИСТЕМА ⟧ Нет предмета «{name}»."
     C.ensure_item_stats(it)
-    L = max(1, it.power or 1)
+    L = max(1, min(4, it.power or 1))
     if it.effect == "heal":
-        v, _ = C.amount(scene, HEAL[L])
-        heal = min(v, c.max_hp - c.hp); c.hp += heal
+        heal = min(B.POTION_HEAL[L], c.max_hp - c.hp); c.hp += heal
         msg = f"{c.name}: +{heal} HP ({c.hp}/{c.max_hp})"
     elif it.effect == "mana":
-        gain = min(MANA[min(L, 4)], c.max_mp - c.mp); c.mp += gain
+        gain = min(B.POTION_MANA[L], c.max_mp - c.mp); c.mp += gain
         msg = f"{c.name}: +{gain} MP ({c.mp}/{c.max_mp})"
     elif it.effect == "cure":
         gone = [x.name for x in c.conditions if x.name in CURABLE]
         c.conditions = [x for x in c.conditions if x.name not in CURABLE]
         msg = f"{c.name}: сняты {', '.join(gone)}" if gone else f"{c.name}: лечить нечего — эффект пропал впустую"
     elif it.effect == "buff":
-        C.apply_condition(c, "усиление", turns=3, potency=POTENCY[L])
-        msg = f"{c.name}: усиление +{POTENCY[L]} к атаке и урону (3 раунда)"
+        C.apply_condition(c, "усиление", turns=3, potency=B.POTION_BUFF[L])
+        msg = f"{c.name}: усиление +{B.POTION_BUFF[L]} к урону (3 раунда)"
     elif it.effect == "damage":
         tgt = resolve_character(scene, target_name) if target_name else None
         if not tgt or tgt is c:
             return f"⟦ СИСТЕМА ⟧ «{it.name}» нужно бросить в цель: «Система, используй {it.name} на Имя»."
-        v, _ = C.amount(scene, DAMAGE[L])
-        v, soak = C.absorb(tgt, v)
-        old = tgt.hp; tgt.hp = max(0, tgt.hp - v)
-        msg, more = C.knockout(scene, tgt, f"{c.name} → {tgt.name} («{it.name}»): урон {v}{soak}, HP {old}→{tgt.hp}/{tgt.max_hp}")
-        msg += ("\n" + "\n".join(more)) if more else ""
         if in_party(scene, c) and not in_party(scene, tgt):
-            tgt.side = "hostile"
+            C.mark_foe(scene, tgt)
+        dmg, land = C.hurt(scene, tgt, B.BOMB[L], False)
+        msg, more = C.knockout(scene, tgt, f"{c.name} → {tgt.name} («{it.name}»): {B.BOMB[L]}{land}")
+        msg += ("\n" + "\n".join(more)) if more else ""
     else:
         return f"⟦ СИСТЕМА ⟧ «{it.name}» нельзя использовать напрямую (опишите действие рассказчику)."
     it.qty -= 1
@@ -537,8 +511,10 @@ def give_item(scene: Scene, giver: Character, name: str, receiver: Character) ->
     it = find_item(giver, name)
     if not it:
         return f"⟦ СИСТЕМА ⟧ У {giver.name} нет «{name}»."
-    it.qty -= 1; it.equipped = False
-    got = Item(name=it.name, kind=it.kind, damage=it.damage, armor=it.armor, slot=it.slot)
+    it.qty -= 1
+    if it.qty <= 0:
+        it.equipped = False
+    got = it.model_copy(update={"qty": 1, "equipped": False})
     if it.qty <= 0:
         giver.inventory.remove(it)
     ex = next((i for i in receiver.inventory if i.name == got.name), None)
@@ -631,7 +607,12 @@ def inspect_target(scene: Scene, rest: str) -> str:
 def public_char_dict(c: Character, *, in_combat: bool = False) -> dict:
     """Client-facing character view: hide unrevealed NPC stats."""
     if c.is_player or c.side == "party":
-        return c.model_dump()
+        from . import combat as C
+        d = c.model_dump()
+        d["abilities"] = [a.model_dump() | {"stats": ability_stats(a, c)} for a in c.abilities]
+        d["inventory"] = [i.model_dump() | {"text": item_effect_text(i)} for i in c.inventory]
+        d["weapon_line"], d["armor_total"] = weapon_line(c), C.armor_value(c)
+        return d
     d = {
         "id": c.id, "name": c.name, "is_player": False,
         "kind": c.kind if c.reveal.kind else "",
@@ -715,18 +696,24 @@ def _bar(cur, mx, n=10):
 
 EFFECT_RU = {"damage": "урон", "heal": "лечение", "shield": "щит", "buff": "усиление", "debuff": "ослабление",
              "control": "оглушение", "utility": "особое", "passive": "пассивно"}
-BONUS_RU = {"hp": "макс. HP", "mp": "макс. MP", "ac": "КБ", "melee": "урон в ближнем бою", "ranged": "урон дальним оружием",
+BONUS_RU = {"hp": "макс. HP", "mp": "макс. MP", "ac": "броня", "melee": "урон в ближнем бою", "ranged": "урон дальним оружием",
             "spell": "сила заклинаний", "heal": "сила лечения", "init": "инициатива"}
 
 
-def ability_stats(a: Ability) -> str:
-    """Short mechanical summary: «урон 2d6 +Разум · 3 MP», «КБ +1»."""
+def ability_stats(a: Ability, who: Character | None = None) -> str:
+    """Short mechanical summary: «урон 22 ×Разум · 8 MP» (with `who`: «урон 26 (22×Разум)»), «броня +1»."""
     if a.kind == "passive":
-        return ", ".join(f"{BONUS_RU.get(k, k)} {v:+d}" for k, v in (a.bonus or {}).items() if v)
+        return ", ".join(f"{BONUS_RU.get(k, k)} +{v}" for k, v in (a.bonus or {}).items() if v)
     bits = []
-    if a.effect and a.effect not in ("utility", "passive"):
-        pw = f"{a.power} ход." if a.effect == "control" else (f"+{a.power}" if a.effect in ("buff", "debuff") else a.power)
-        bits.append(f"{EFFECT_RU[a.effect]} {pw}".strip() + (f" +{a.scale}" if a.scale else ""))
+    n = B.to_number(a.power)
+    if a.effect in ("damage", "heal", "shield", "buff", "debuff") and n:
+        eff = n if who is None else round(n * (B.mult(who.attrs.get(a.scale, 10)) if a.scale else 1)
+                                          * (B.level_mult(who.level) if a.effect in ("damage", "heal", "shield") else 1))
+        num = f"{eff} ({n}×{a.scale or 'ур.'})" if who is not None and eff != n else (
+            f"{n} ×{a.scale}" if a.scale and who is None else str(n))
+        bits.append(f"{EFFECT_RU[a.effect]} {num}")
+    elif a.effect == "control":
+        bits.append(f"оглушение {n or 1} ход.")
     elif a.effect == "utility":
         bits.append("особое")
     if a.mp:
@@ -736,12 +723,23 @@ def ability_stats(a: Ability) -> str:
     return " · ".join(bits)
 
 
+def weapon_line(c: Character) -> str:
+    """«Меч: урон 10 (9×Сила)» — what the character's blow does now."""
+    from . import combat as C
+    w = C.equipped_weapon(c)
+    base = C.weapon_damage_base(w)
+    attr = "Ловкость" if C.is_ranged(w) else "Сила"
+    v = round(base * B.mult(c.attrs.get(attr, 10)) * B.level_mult(c.level)) + passive_bonus(c, "ranged" if attr == "Ловкость" else "melee")
+    how = f"{base}×{attr}" + (f"×ур.{c.level}" if c.level > 1 else "")
+    return f"{w.name if w else 'Без оружия'}: урон {v}" + (f" ({how})" if v != base else "")
+
+
 def status_text(c: Character) -> str:
     from . import combat as C
     lines = [f"#### {c.name} — уровень {c.level}",
              f"❤️ HP {c.hp}/{c.max_hp} {_bar(c.hp, c.max_hp)}", f"🔷 MP {c.mp}/{c.max_mp} {_bar(c.mp, c.max_mp)}",
-             f"✨ EXP {c.exp}/{c.exp_next} · КБ {C.ac(c)}",
-             " · ".join(f"{a} {v} ({amp(v):+d})" for a, v in c.attrs.items())]
+             f"✨ EXP {c.exp}/{c.exp_next} · броня {C.armor_value(c)} · {weapon_line(c)}",
+             " · ".join(f"{a} {v} (×{B.mult(v):g})".replace(".", ",") for a, v in c.attrs.items())]
     if c.conditions:
         lines.append("Состояния: " + ", ".join(f"{x.name}({x.turns_left})" for x in c.conditions))
     if c.attr_points or c.ability_points:
@@ -810,8 +808,8 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
         lines = []
         for i in p.inventory:
             mark = " [экип.]" if i.equipped else ""
-            extra = f", урон {i.damage}" if i.damage else (f", броня +{i.armor}" if i.armor else "")
-            lines.append(f"- {i.name}" + (f" ×{i.qty}" if i.qty > 1 else "") + mark + extra)
+            extra = item_effect_text(i)
+            lines.append(f"- {i.name}" + (f" ×{i.qty}" if i.qty > 1 else "") + mark + (f", {extra}" if extra else ""))
         return "### ⟦ СИСТЕМА · ИНВЕНТАРЬ ⟧\n" + "\n".join(lines)
     if cmd == "equip":
         name = re.sub(r"экип\w*|надень|надет\w*|equip|вооруж\w*", "", rest).strip()
@@ -882,5 +880,5 @@ def state_line(scene: Scene) -> str:
             for c in [p] + party if any(a.kind == "active" for a in c.abilities)]
     skills = (" Активные способности — " + "; ".join(acts) + ".") if acts else ""
     return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, MP {p.mp}/{p.max_mp}, "
-            f"EXP {p.exp}/{p.exp_next}, КБ {C.ac(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat}{skills} "
+            f"EXP {p.exp}/{p.exp_next}, броня {C.armor_value(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat}{skills} "
             f"В сцене: {', '.join(present) or 'никого'}.")

@@ -10,6 +10,8 @@ from . import prompts as P
 from .models import ATTRS, Ability, Character, Item, Scene
 from .prompt import render
 
+from .generate import ABILITY_PROPS
+
 DIRECTOR_SCHEMA = {
     "type": "object",
     "required": ["reply", "summary"],
@@ -39,13 +41,7 @@ DIRECTOR_SCHEMA = {
                         "items": {
                             "type": "object",
                             "required": ["name", "kind"],
-                            "properties": {
-                                "name": {"type": "string"},
-                                "kind": {"type": "string", "enum": ["active", "passive"]},
-                                "description": {"type": "string"},
-                                "cost": {"type": "string"},
-                                "cooldown": {"type": "string"},
-                            },
+                            "properties": ABILITY_PROPS,
                         },
                     },
                     "abilities_add": {
@@ -53,13 +49,7 @@ DIRECTOR_SCHEMA = {
                         "items": {
                             "type": "object",
                             "required": ["name", "kind"],
-                            "properties": {
-                                "name": {"type": "string"},
-                                "kind": {"type": "string", "enum": ["active", "passive"]},
-                                "description": {"type": "string"},
-                                "cost": {"type": "string"},
-                                "cooldown": {"type": "string"},
-                            },
+                            "properties": ABILITY_PROPS,
                         },
                     },
                     "inventory_add": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
@@ -192,7 +182,8 @@ def build_director_prompt(scene: Scene, order: str, *, audit: bool = False) -> l
         "- summary: очень кратко для лога (что ответила / что правила).",
         "- narrator_note (опционально): одноразовая мягкая подсказка рассказчику на СЛЕДУЮЩИЙ ход (тон, акцент, чего избегать). Пусто, если не нужно.",
         "- character_patches / scene_patch: только при реальных правках; иначе [] и {}.",
-        f"- abilities_set заменяет список; abilities_add добавляет; inventory_add/remove; attrs из [{attrs}] (3–18).",
+        "- у способности: effect (damage|heal|shield|buff|debuff|control|utility) и scale (атрибут) для активной, bonus (hp|mp|ac|melee|ranged|spell|heal|init) для пассивной; чисел не пиши — их назначит Система.",
+        f"- abilities_set заменяет способности карточки (способности из Книги путей не трогаются); abilities_add добавляет; inventory_add/remove; attrs из [{attrs}] (3–20).",
         "- Не удаляй персонажа игрока из сцены. Не пиши код.",
     ])
     system = (
@@ -214,20 +205,8 @@ def parse_director_json(content: str) -> dict:
 
 
 def _ability_from(raw: dict) -> Ability | None:
-    if not isinstance(raw, dict):
-        return None
-    name = re.sub(r"\s+", " ", str(raw.get("name") or "").strip())[:40]
-    if not name:
-        return None
-    kind = str(raw.get("kind") or "passive").lower()
-    if kind not in ("active", "passive"):
-        kind = "passive"
-    return Ability(
-        name=name, kind=kind,
-        description=str(raw.get("description") or "").strip()[:200],
-        cost=str(raw.get("cost") or "").strip()[:40],
-        cooldown=str(raw.get("cooldown") or "").strip()[:40],
-    )
+    from . import magic as G
+    return G.card_ability(raw)
 
 
 def _add_item(c: Character, name: str, msgs: list[str]):
@@ -277,7 +256,7 @@ def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool, str]:
                 if not a:
                     continue
                 try:
-                    nv = max(3, min(18, int(v)))
+                    nv = max(3, min(20, int(v)))
                 except (TypeError, ValueError):
                     continue
                 if c.attrs.get(a) != nv:
@@ -286,9 +265,12 @@ def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool, str]:
                     changed = True
                     need_rebuild = True
         if "abilities_set" in patch and isinstance(patch["abilities_set"], list):
-            new_abs = [ab for x in patch["abilities_set"] if (ab := _ability_from(x))]
-            c.abilities = new_abs[:8]
-            actions.append(f"{c.name}: способности заменены ({len(c.abilities)})")
+            # the Book of paths is the player's progression: only the card's own abilities are replaced
+            from_book = [a for a in c.abilities if a.path]
+            new_abs = [ab for x in patch["abilities_set"] if (ab := _ability_from(x))
+                       and not any(M.norm(b.name) == M.norm(ab.name) for b in from_book)]
+            c.abilities = from_book + new_abs[:8]
+            actions.append(f"{c.name}: способности карточки заменены ({len(new_abs[:8])})")
             changed = True
             need_rebuild = True
         if isinstance(patch.get("abilities_add"), list):
@@ -302,7 +284,7 @@ def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool, str]:
                 actions.append(f"{c.name}: +способность «{ab.name}»")
                 changed = True
                 need_rebuild = True
-            c.abilities = c.abilities[:8]
+            c.abilities = [a for a in c.abilities if a.path] + [a for a in c.abilities if not a.path][:8]
         for name in patch.get("inventory_add") or []:
             before = len(actions)
             _add_item(c, str(name), actions)
@@ -374,7 +356,7 @@ def apply_patches(scene: Scene, data: dict) -> tuple[str, list[str], bool, str]:
     reply = str(data.get("reply") or "").strip()[:1200]
     note = str(data.get("narrator_note") or "").strip()[:400]
     if note:
-        scene.director_note = note
+        scene.director_note = ((scene.director_note + " ") if scene.director_note else "") + note
         actions.append("заметка рассказчику на следующий ход")
     summary = str(data.get("summary") or "").strip()[:400] or (
         "Директор внёс правки." if actions else (reply[:120] if reply else "без правок")

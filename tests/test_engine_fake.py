@@ -82,7 +82,7 @@ def test_introduce_and_witness():
     m = next(c for c in s.characters.values() if c.name == "Мирна")
     assert m.id in s.present
     from app.engine import TurnEngine as T
-    knows = T(None).knows(s, m)
+    knows = T(None).recent_knows(s, m)
     assert not any("Дверь распахивается" in k for k in knows)   # happened before she entered
     assert "Карточка:" in llm.prompts[2]                          # not in fixed block -> inline card
 

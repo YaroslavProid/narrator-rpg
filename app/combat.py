@@ -1,82 +1,102 @@
-"""Combat: initiative, attack/defense, damage dice, conditions. Pure code; narrator only announces intent."""
+"""Combat: initiative, honest turn order, attacks, abilities, free-form deeds, active defence, conditions.
+Pure code; the narrator only announces intent. Every number comes from balance.py: damage is a plain number
+amplified by the attribute, armour takes a flat amount off physical blows."""
 import re
-from . import mechanics as M
+from . import balance as B, mechanics as M
 from .models import Ability, Character, Combat, Combatant, Condition, Item, Scene
 
-WEAPON_DEFAULTS = {  # name substring -> (damage, kind)
-    "меч": ("1d8", "оружие"), "сабл": ("1d8", "оружие"), "кинжал": ("1d4", "оружие"), "нож": ("1d4", "оружие"),
-    "топор": ("1d8", "оружие"), "булав": ("1d6", "оружие"), "дубин": ("1d6", "оружие"), "копь": ("1d6", "оружие"),
-    "лук": ("1d8", "оружие"), "арбалет": ("1d8", "оружие"), "пистол": ("1d10", "оружие"), "кулак": ("1d3", "оружие"),
-    "тесак": ("1d8", "оружие"), "секир": ("1d10", "оружие"), "молот": ("1d8", "оружие"), "цеп": ("1d8", "оружие"),
-    "алебард": ("1d10", "оружие"), "кистен": ("1d6", "оружие"), "вил": ("1d6", "оружие"), "серп": ("1d4", "оружие"),
-    "шпаг": ("1d8", "оружие"), "рапир": ("1d8", "оружие"), "посох": ("1d6", "оружие"),
-}
-WEAPON_NAMES = {"меч": "Меч", "сабл": "Сабля", "кинжал": "Кинжал", "нож": "Нож", "топор": "Топор", "булав": "Булава",
-                "дубин": "Дубина", "копь": "Копьё", "лук": "Лук", "арбалет": "Арбалет", "пистол": "Пистолет",
-                "кулак": "Кулаки", "тесак": "Тесак", "секир": "Секира", "молот": "Молот", "цеп": "Цеп",
-                "алебард": "Алебарда", "кистен": "Кистень", "вил": "Вилы", "серп": "Серп", "шпаг": "Шпага",
-                "рапир": "Рапира", "посох": "Посох"}
-ARMOR_DEFAULTS = {"кольчуг": 4, "латы": 6, "кожан": 2, "щит": 2, "броня": 3}
+
+# ---------------- gear ----------------
+def _stem(name: str, table: dict) -> str | None:
+    n = (name or "").lower()
+    if B.NOT_GEAR.search(n):
+        return None
+    return next((k for k in sorted(table, key=len, reverse=True) if B.stem_at_word_start(n, k)), None)
 
 
-def parse_dice(expr: str) -> tuple[int, int, int]:
-    """'1d8+2' → (n, sides, bonus). Bare int → (0, 0, int)."""
-    e = (expr or "").strip().lower().replace(" ", "")
-    m = re.fullmatch(r"(\d+)d(\d+)([+-]\d+)?", e)
-    if m and int(m.group(2)) > 0:
-        return min(20, int(m.group(1))), int(m.group(2)), int(m.group(3) or 0)
-    try:
-        return 0, 0, int(e)
-    except ValueError:
-        return 1, 4, 0
+def weapon_stem(name: str) -> str | None:
+    return _stem(name, B.WEAPONS)
 
 
-def amount(scene: Scene, expr: str) -> tuple[int, str]:
-    """Damage/healing/shield size: rolled in d20 mode, the fixed average in «Система» mode (1d8 -> 5)."""
-    if scene.rule_mode != "система":
-        return roll_dice(scene, expr)
-    n, sides, bonus = parse_dice(expr)
-    if sides == 0:
-        return bonus, str(bonus)
-    v = int(max(1, n) * (sides + 1) / 2 + 0.5) + bonus
-    return v, str(v)
+def is_ranged(weapon: Item | None) -> bool:
+    if not weapon:
+        return False
+    k = weapon_stem(weapon.name)
+    return bool(k and B.WEAPONS[k][2])
+
+
+def weapon_damage_base(weapon: Item | None) -> int:
+    if not weapon:
+        return B.UNARMED
+    return B.to_number(weapon.damage) or B.UNARMED
+
+
+CONSUMABLES = [   # (name stems at a word start, effect) — first match wins
+    (("противояд", "антидот"), "cure"),
+    (("зелье маны", "эликсир маны", "мана", "маны", "эссенци", "эфир"), "mana"),
+    (("зелье силы", "эликсир силы", "стимулятор", "боевой эликсир", "отвар ярости"), "buff"),
+    (("зель", "эликсир", "исцел", "целеб", "лечеб", "бинт", "бандаж", "аптеч", "припарк", "мазь", "снадоб", "аптечк"), "heal"),
+    (("бомб", "гранат", "огненная склянк", "зажигат", "взрывча", "коктейль молотова"), "damage"),
+]
+POWER_WORDS = [(("мал", "слаб", "простой"), 1), (("больш", "сильн", "крепк"), 3), (("велик", "высш", "превосход"), 4)]
+
+
+def classify_consumable(item: Item) -> Item:
+    n = item.name.lower()
+    for stems, eff in CONSUMABLES:
+        if any(B.stem_at_word_start(n, st) for st in stems):
+            item.effect = eff
+            item.power = next((p for words, p in POWER_WORDS if any(B.stem_at_word_start(n, w) for w in words)), 2)
+            if item.kind == "предмет":
+                item.kind = "расходник"
+            break
+    return item
+
+
+def ensure_item_stats(item: Item) -> Item:
+    """Weapons get a damage number, armour an armour value and a slot, consumables an effect — from the name.
+    A legacy dice string («1d8») becomes a number. Things that only look like gear («ножны», «кожаная сумка») stay items."""
+    if item.damage and not re.fullmatch(r"\d+", item.damage.strip()):
+        item.damage = str(B.to_number(item.damage) or "")
+    if not item.effect and not item.damage and not item.armor:
+        classify_consumable(item)
+    if item.effect:
+        return item
+    w = weapon_stem(item.name)
+    if w and not item.damage and not item.armor:
+        item.damage, item.kind = str(B.WEAPONS[w][1]), "оружие"
+    a = _stem(item.name, B.ARMOR)
+    if a and not item.armor and not item.damage:
+        item.armor, item.kind, item.slot = B.ARMOR[a][0], "броня", B.ARMOR[a][1]
+    if item.kind == "оружие" and not item.slot:
+        item.slot = "рука"
+    if item.kind == "броня" and not item.slot:
+        item.slot = "тело"
+    return item
+
+
+def equipped_weapon(c: Character) -> Item | None:
+    w = next((i for i in c.inventory if i.equipped and i.kind == "оружие"), None)
+    if w:
+        return w
+    return next((i for i in c.inventory if i.kind == "оружие"), None)
 
 
 def armor_value(c: Character) -> int:
     return sum(i.armor for i in c.inventory if i.equipped and i.kind == "броня") + M.passive_bonus(c, "ac")
 
 
-def hit_chance(attr_val: int, buff: int, target: Character) -> float:
-    """«Система»: 65% between equals; ±5 percentage points per point of the attacking attribute over the target's
-    Ловкость, −5 per point of armour, ±5 per point of buff/debuff."""
-    return (0.65 + M.CHANCE_STEP * (attr_val - target.attrs.get("Ловкость", 10))
-            - M.CHANCE_STEP * armor_value(target) + M.CHANCE_STEP * buff)
-
-
-def scaled(scene: Scene, base: int, attr_val: int, extra: int) -> tuple[int, str]:
-    """«Система»: the attribute multiplies the effect; passives and buffs add on top. d20: the old flat amplifier."""
-    mult = M.power_mult(attr_val)
-    v = max(1, round(base * mult) + extra)
-    return v, f"{base}×{mult:g}".replace(".", ",") + (f"{extra:+d}" if extra else "") + f"={v}"
-
-
-def roll_dice(scene: Scene, expr: str) -> tuple[int, str]:
-    n, sides, bonus = parse_dice(expr)
-    if sides == 0:
-        return bonus, str(bonus)
-    rolls = [M.rng(scene).randint(1, sides) for _ in range(max(1, n))]
-    total = sum(rolls) + bonus
-    body = "+".join(map(str, rolls)) + (f"{bonus:+d}" if bonus else "")
-    return total, f"{n}d{sides}({body})={total}"
-
-
 def ac(c: Character) -> int:
-    armor = sum(i.armor for i in c.inventory if i.equipped and i.kind == "броня")
-    return 10 + M.mod(c.attrs.get("Ловкость", 10)) + armor + M.passive_bonus(c, "ac")
+    """d20 only: armour class from agility (armour itself takes damage off instead)."""
+    return 10 + M.mod(c.attrs.get("Ловкость", 10))
 
 
 def cond_potency(c: Character, name: str) -> int:
     return max((x.potency for x in c.conditions if x.name == name), default=0)
+
+
+def buff_sign(c: Character) -> int:
+    return (1 if cond_potency(c, "усиление") else 0) - (1 if cond_potency(c, "ослабление") else 0)
 
 
 def initiative(scene: Scene, c: Character) -> int:
@@ -91,85 +111,67 @@ def absorb(target: Character, dmg: int) -> tuple[int, str]:
     soak = min(sh.potency, dmg); sh.potency -= soak
     if sh.potency <= 0:
         target.conditions.remove(sh)
-    return dmg - soak, f" (щит поглотил {soak})"
+    return dmg - soak, f", щит −{soak}"
 
 
-def equipped_weapon(c: Character) -> Item | None:
-    w = next((i for i in c.inventory if i.equipped and i.kind == "оружие"), None)
-    if w:
-        return w
-    for i in c.inventory:
-        if i.kind == "оружие" or any(k in i.name.lower() for k in WEAPON_DEFAULTS):
-            return i
-    return None
+def _num(v: float) -> str:
+    return f"{v:g}".replace(".", ",")
 
 
-CONSUMABLES = [   # (name stems, effect) — first match wins
-    (("противояд", "антидот"), "cure"),
-    (("мана", "маны", "эссенци", "эфир"), "mana"),
-    (("зелье силы", "эликсир силы", "стимулятор", "боевой эликсир", "отвар ярости"), "buff"),
-    (("зель", "эликсир", "исцел", "целеб", "лечеб", "бинт", "бандаж", "аптеч", "припарк", "мазь", "снадоб"), "heal"),
-    (("бомб", "гранат", "огненная склянк", "зажигат", "взрывча", "коктейль молотова"), "damage"),
-]
-POWER_WORDS = [(("мал", "слаб", "простой"), 1), (("больш", "сильн", "крепк"), 3), (("велик", "высш", "превосход", "легендарн"), 4)]
+def spread(scene: Scene, dmg: int, crit: bool = False) -> tuple[int, str]:
+    """d20: ±20% around the number and ×2 on a natural 20. «Система»: the number is exact."""
+    if scene.rule_mode == "система":
+        return dmg, ""
+    f = 1 + M.rng(scene).uniform(-B.D20_SPREAD, B.D20_SPREAD)
+    v = max(1, round(dmg * f * (2 if crit else 1)))
+    return v, (f" ×{_num(round(f, 2))}" + (" ×2 крит" if crit else "") + f"={v}")
 
 
-def classify_consumable(item: Item) -> Item:
-    n = item.name.lower()
-    for stems, eff in CONSUMABLES:
-        if any(st in n for st in stems):
-            item.effect = eff
-            item.power = next((p for words, p in POWER_WORDS if any(w in n for w in words)), 2)
-            if item.kind == "предмет":
-                item.kind = "расходник"
-            break
-    return item
+def _mults(attr: str, attr_val: int, level: int) -> tuple[float, str]:
+    m, lv = B.mult(attr_val), B.level_mult(level)
+    return m * lv, (f"×{_num(m)} ({attr})" if m != 1 else "") + (f"×{_num(round(lv, 2))} (ур. {level})" if lv != 1 else "")
 
 
-def ensure_item_stats(item: Item) -> Item:
-    if not item.effect and not item.damage and not item.armor:
-        classify_consumable(item)
-    n = item.name.lower()
-    if not item.damage:
-        for k, (dmg, kind) in WEAPON_DEFAULTS.items():
-            if k in n:
-                item.damage, item.kind = dmg, kind; break
-    if not item.armor:
-        for k, a in ARMOR_DEFAULTS.items():
-            if k in n:
-                item.armor, item.kind = a, "броня"; break
-    if item.kind == "оружие" and not item.slot:
-        item.slot = "рука"
-    if item.kind == "броня" and not item.slot:
-        item.slot = "тело"
-    return item
+def physical(scene: Scene, attacker: Character, weapon: Item | None, base: int | None = None, crit: bool = False) -> tuple[int, str]:
+    """Weapon damage: the weapon's number × the attribute (Сила, Ловкость for ranged) × the level + passives + buff."""
+    ranged = is_ranged(weapon)
+    attr = "Ловкость" if ranged else "Сила"
+    base = weapon_damage_base(weapon) if base is None else base
+    m, ms = _mults(attr, attacker.attrs.get(attr, 10), attacker.level)
+    extra = (M.passive_bonus(attacker, "ranged" if ranged else "melee")
+             + cond_potency(attacker, "усиление") - cond_potency(attacker, "ослабление"))
+    v = max(1, round(base * m) + extra)
+    text = f"{base}{ms}" + (f"{extra:+d}" if extra else "")
+    v, s = spread(scene, v, crit)
+    return v, text + (f"={v}" if not s and (m != 1 or extra) else s)
 
 
-def attack_bonus(c: Character, weapon: Item | None) -> tuple[int, str]:
-    attr = "Ловкость" if is_ranged(weapon) else "Сила"
-    # Soft weight instead of hard mod + skill level; buffs/debuffs from spells shift it
-    return M.soft_weight(c.attrs.get(attr, 10), 10) + cond_potency(c, "усиление") - cond_potency(c, "ослабление"), attr
+def magical(scene: Scene, caster: Character, a: Ability, bonus_key: str, levelled: bool = True) -> tuple[int, str]:
+    """An ability's number × its attribute × the caster's level (damage, healing, shields) + the matching passive."""
+    base = B.to_number(a.power) or 1
+    m, ms = _mults(a.scale, caster.attrs.get(a.scale, 10) if a.scale else 10, caster.level if levelled else 1)
+    extra = M.passive_bonus(caster, bonus_key) if bonus_key else 0
+    v = max(1, round(base * m) + extra)
+    text = f"{base}{ms}" + (f"{extra:+d}" if extra else "")
+    v, s = spread(scene, v)
+    return v, text + (f"={v}" if not s and (m != 1 or extra) else s)
 
 
-def is_ranged(weapon: Item | None) -> bool:
-    return bool(weapon) and any(k in weapon.name.lower() for k in ("лук", "арбалет", "пистол", "ружь", "винтов"))
+def hurt(scene: Scene, target: Character, dmg: int, physical_blow: bool) -> tuple[int, str]:
+    """Armour (physical only) and a shield take their part; returns the damage that lands and a note."""
+    note = ""
+    if physical_blow:
+        arm = armor_value(target)
+        if arm:
+            dmg = max(1, dmg - arm); note += f", броня −{arm}"
+    dmg, soak = absorb(target, dmg)
+    old = target.hp
+    target.hp = max(0, target.hp - dmg)
+    return dmg, f"{note}{soak} → урон {dmg}, HP {old}→{target.hp}/{target.max_hp}"
 
 
-def damage_bonus(c: Character, weapon: Item | None) -> int:
-    """Strength (melee) / Agility (ranged) amplify weapon damage, plus passives and buffs."""
-    if is_ranged(weapon):
-        return M.amp(c.attrs.get("Ловкость", 10)) + M.passive_bonus(c, "ranged") + cond_potency(c, "усиление")
-    return M.amp(c.attrs.get("Сила", 10)) + M.passive_bonus(c, "melee") + cond_potency(c, "усиление")
-
-
-# threat -> (level offset from the hero, base HP, HP per level, base attribute, natural damage, armour)
-THREATS = {
-    "слабый":  (-2, 6, 3, 9, "1d4", 0),
-    "обычный": (0, 12, 4, 11, "1d6", 0),
-    "опасный": (1, 18, 5, 13, "1d8", 1),
-    "элита":   (2, 28, 7, 15, "1d10", 2),
-    "босс":    (4, 45, 12, 17, "2d8", 3),
-}
+# ---------------- foes ----------------
+THREATS = B.THREATS
 THREAT_ALIASES = {"слаб": "слабый", "weak": "слабый", "мелк": "слабый", "обыч": "обычный", "normal": "обычный",
                   "опасн": "опасный", "сильн": "опасный", "dangerous": "опасный", "элит": "элита", "elite": "элита",
                   "босс": "босс", "boss": "босс", "владык": "босс", "лорд": "босс"}
@@ -182,36 +184,39 @@ def norm_threat(t: str) -> str:
 
 
 def is_blank(c: Character) -> bool:
-    """A foe the narrator just made up: default sheet (all 10, 20 HP, level 1) and no threat assigned yet."""
-    return not c.threat and c.level == 1 and c.max_hp == 20 and all(v == 10 for v in c.attrs.values())
+    """A foe the narrator just made up: default sheet (all 10, level 1) and no threat assigned yet."""
+    return not c.threat and c.level == 1 and all(v == 10 for v in c.attrs.values())
 
 
 def apply_threat(scene: Scene, c: Character, threat: str = "обычный") -> str:
-    """Give a foe a sheet matching its threat and the hero's level: level, HP, attributes, a weapon or natural
-    attack, armour. Only for blank sheets — characters the player or the Director built are left alone."""
+    """Give a foe a sheet matching its threat and the hero's level: level, attributes, a weapon or natural
+    attack, armour; HP follows from the threat (mechanics.sync_derived). Only for blank sheets — characters the
+    player or the Director built keep their attributes."""
     threat = norm_threat(threat) or "обычный"
     if not is_blank(c):
         c.threat = c.threat or threat
+        M.sync_derived(c)
         return ""
-    off, hp0, hp_l, base, nat, arm = THREATS[threat]
+    off, _, base, dmg, arm = THREATS[threat]
     lvl = max(1, scene.player.level + off)
     c.threat, c.level = threat, lvl
-    c.max_hp = c.hp = hp0 + hp_l * lvl
-    grow = lvl // 3
     beast = any(k in (c.kind + " " + c.name + " " + c.description).lower() for k in BEAST)
     for a in c.attrs:
-        c.attrs[a] = base + grow + (1 if (beast and a in ("Сила", "Ловкость", "Выносливость")) else 0) \
+        c.attrs[a] = base + (1 if (beast and a in ("Сила", "Ловкость", "Выносливость")) else 0) \
             - (2 if (beast and a in ("Разум", "Влияние")) else 0)
-    c.hp_bonus = 3 * M.amp(c.attrs.get("Выносливость", 10)) + M.passive_bonus(c, "hp")
-    c.mp_bonus = 2 * M.amp(c.attrs.get("Разум", 10)) + M.passive_bonus(c, "mp")
+    for i in c.inventory:
+        ensure_item_stats(i)
     if not equipped_weapon(c):
         desc = (c.description + " " + c.kind).lower()
-        named = next((k for k in WEAPON_DEFAULTS if k in desc), None)
-        w = Item(name=WEAPON_NAMES[named] if named else ("Клыки и когти" if beast else "Оружие"), kind="оружие",
-                 damage=WEAPON_DEFAULTS[named][0] if named else nat, equipped=True, slot="рука")
+        named = next((k for k in B.WEAPONS if B.stem_at_word_start(desc, k)), None)
+        w = Item(name=B.WEAPONS[named][0] if named else ("Клыки и когти" if beast else "Оружие"), kind="оружие",
+                 damage=str(dmg), equipped=True, slot="рука")      # the threat sets the blow; the level grows it
         c.inventory.append(w)
     if arm and not any(i.kind == "броня" and i.equipped for i in c.inventory):
         c.inventory.append(Item(name="Шкура" if beast else "Доспех", kind="броня", armor=arm, equipped=True, slot="тело"))
+    c.max_hp = 0
+    M.sync_derived(c)
+    c.hp = c.max_hp
     return f"{c.name}: {threat}, ур. {lvl}, HP {c.max_hp}"
 
 
@@ -333,7 +338,7 @@ def _waits_turn(scene: Scene, c: Character) -> bool:
     return cb.active and c.hp > 0 and any(o.id == c.id for o in cb.order)
 
 
-def run_foes(scene: Scene) -> list[str]:
+def run_foes(scene: Scene) -> list[dict]:
     """After a party member acted: every foe whose turn comes acts, until it is the hero's or a companion's turn
     (then the companion waits for the hero's advice). Returns [{text: shown to the player, brief: for the narrator}]."""
     out = drain_notes(scene)
@@ -381,18 +386,15 @@ def start_combat(scene: Scene, ids: list[str], first: str = "") -> str:
     for i in ids:
         if i not in scene.present:
             scene.present.append(i)
-    order = []
-    for i in ids:
-        c = scene.characters[i]
-        order.append(Combatant(id=i, initiative=initiative(scene, c)))
+    order = [Combatant(id=i, initiative=initiative(scene, scene.characters[i])) for i in ids]
     order.sort(key=lambda x: -x.initiative)
     scene.combat = Combat(active=True, round=1, order=order, current=0)
     if first:
         scene.combat.current = next((k for k, o in enumerate(order) if o.id == first), 0)
     lines = [f"⟦ БОЙ · раунд 1 ⟧ Инициатива: " + ", ".join(
         f"{scene.characters[o.id].name} {o.initiative}" for o in order)]
-    cur = scene.characters[order[0].id]
-    lines.append(f"Ход: {cur.name}." + (" (ты)" if cur.is_player else " Опиши его действие или дождись атаки."))
+    cur = scene.characters[order[scene.combat.current].id]
+    lines.append(f"Ход: {cur.name}." + (" (ты)" if cur.is_player else ""))
     return "\n".join(lines)
 
 
@@ -421,27 +423,10 @@ def end_combat(scene: Scene) -> str:
     gone = {cid for cid in scene.present if (c := scene.characters.get(cid)) and not c.is_player
             and c.side == "hostile" and c.hp <= 0 and cid not in scene.party}
     scene.present = [cid for cid in scene.present if cid not in gone]
+    for c in scene.characters.values():          # a fight's effects end with it (a downed ally is not stunned for later)
+        c.conditions = [x for x in c.conditions if x.name not in ("оглушение", "щит", "усиление", "ослабление")]
     scene.combat = Combat()
     return "⟦ БОЙ ОКОНЧЕН ⟧"
-
-
-def advance_turn(scene: Scene) -> str:
-    cb = scene.combat
-    if not cb.active or not cb.order:
-        return ""
-    cb.order[cb.current].acted = True
-    nxt = (cb.current + 1) % len(cb.order)
-    if nxt == 0:
-        cb.round += 1
-        for o in cb.order:
-            o.acted = False
-        tick = tick_conditions(scene)
-        cb.current = 0
-        who = scene.characters[cb.order[0].id]
-        return f"Раунд {cb.round}. Ход: {who.name}." + (("\n" + tick) if tick else "")
-    cb.current = nxt
-    who = scene.characters[cb.order[nxt].id]
-    return f"Ход: {who.name}." + (" (ты)" if who.is_player else "")
 
 
 def tick_conditions(scene: Scene) -> str:
@@ -484,8 +469,20 @@ def apply_condition(c: Character, name: str, turns: int = 2, potency: int = 0) -
     return f"{c.name}: состояние «{name}» ({turns} ход.)"
 
 
+def _roll_hit(scene: Scene, attacker: Character, target: Character, attr: str) -> tuple[bool, bool, str]:
+    """(hit, crit, text). «Система»: a chance from the attribute against the target's Ловкость. d20: d20 vs AC."""
+    av = attacker.attrs.get(attr, 10)
+    if scene.rule_mode == "система":
+        hit, pct = M.chance(scene, B.hit_chance(av, target.attrs.get("Ловкость", 10), buff_sign(attacker)))
+        return hit, False, f"{attr} {av} против Ловкости {target.attrs.get('Ловкость', 10)} — шанс {pct}%"
+    bonus = M.soft_weight(av, 10) + 2 * buff_sign(attacker)
+    die = M.rng(scene).randint(1, 20)
+    total, tac = die + bonus, ac(target)
+    return die == 20 or (die != 1 and total >= tac), die == 20, f"1d20({die}){bonus:+d}={total} против КБ {tac}"
+
+
 def attack(scene: Scene, attacker: Character, target: Character, weapon_name: str = "") -> dict:
-    """Resolve one attack. Auto-starts combat if needed. Returns result dict with text."""
+    """Resolve one weapon attack. Auto-starts combat if needed. Returns {hit, text, msgs, damage}."""
     if not scene.combat.active:
         start_combat(scene, [attacker.id, target.id], first=attacker.id)
     elif not any(o.id == target.id for o in scene.combat.order):
@@ -493,66 +490,35 @@ def attack(scene: Scene, attacker: Character, target: Character, weapon_name: st
     w = None
     if weapon_name:
         w = next((i for i in attacker.inventory if weapon_name.lower() in i.name.lower()), None)
-        if w:
-            ensure_item_stats(w)
-        elif any(k in weapon_name.lower() for k in WEAPON_DEFAULTS):
+        if w is None and weapon_stem(weapon_name):
             # the narrator says «обнажает короткий меч» but the card has no such item: use the weapon anyway
-            w = ensure_item_stats(Item(name=weapon_name.strip()[:40]))
+            w = Item(name=weapon_name.strip()[:40])
     w = w or equipped_weapon(attacker)
     if w:
         ensure_item_stats(w)
-    dmg_expr = (w.damage if w and w.damage else "1d4")
-    bonus, skill = attack_bonus(attacker, w)
+    attr = "Ловкость" if is_ranged(w) else "Сила"
     wname = w.name if w else "безоружный удар"
-    target_ac = ac(target)
     msgs = []
-    if scene.rule_mode == "d20":
-        die = M.rng(scene).randint(1, 20)
-        total = die + bonus
-        hit = die == 20 or (die != 1 and total >= target_ac)
-        crit = die == 20
-        atk_txt = f"1d20({die}){bonus:+d}={total} против КБ {target_ac}"
-    else:
-        buff = cond_potency(attacker, "усиление") - cond_potency(attacker, "ослабление")
-        hit, pct = M.chance(scene, hit_chance(attacker.attrs.get(skill, 10), buff, target))
-        crit = False
-        die = None
-        arm = armor_value(target)
-        atk_txt = (f"{skill} {attacker.attrs.get(skill, 10)} против Ловкости {target.attrs.get('Ловкость', 10)}"
-                   + (f", броня {arm}" if arm else "") + f" — шанс попасть {pct}%")
+    hit, crit, atk_txt = _roll_hit(scene, attacker, target, attr)
     if any(c.name == "оглушение" for c in attacker.conditions):
         hit = False
         msgs.append(f"{attacker.name} оглушён и промахивается.")
     text = f"⚔️ {attacker.name} → {target.name} ({wname}): {atk_txt} — "
     if not hit:
-        text += "промах!" + (" (крит. провал)" if die == 1 else "")
-        return {"hit": False, "text": text, "msgs": msgs, "damage": 0}
-    if scene.rule_mode == "система":
-        dmg, dmg_s = weapon_damage(scene, attacker, w, skill)
-    else:
-        dmg, dmg_s = amount(scene, dmg_expr)
-        if crit:
-            dmg2, dmg_s2 = roll_dice(scene, dmg_expr)
-            dmg += dmg2; dmg_s = f"крит {dmg_s}+{dmg_s2}"
-        db = damage_bonus(attacker, w)
-        if db:
-            dmg = max(1, dmg + db); dmg_s += f"{db:+d}={dmg}"
-    dmg, soak = absorb(target, dmg)
-    old = target.hp
-    target.hp = max(0, target.hp - dmg)
-    text += f"попадание! Урон {dmg_s}{soak} → HP {old}→{target.hp}/{target.max_hp}"
-    if crit:
-        text += " (крит!)"
+        return {"hit": False, "text": text + "промах!", "msgs": msgs, "damage": 0}
+    dmg, dmg_s = physical(scene, attacker, w, crit=crit)
+    dmg, land = hurt(scene, target, dmg, True)
+    text += f"попадание! {dmg_s}{land}"
     text, more = knockout(scene, target, text)
-    msgs += more
-    return {"hit": True, "text": text, "msgs": msgs, "damage": dmg}
+    return {"hit": True, "text": text, "msgs": msgs + more, "damage": dmg}
 
 
 def knockout(scene: Scene, target: Character, text: str) -> tuple[str, list[str]]:
     msgs = []
     if target.hp == 0:
         text += f" — {target.name} без сознания!"
-        apply_condition(target, "оглушение", turns=3)
+        if not M.in_party(scene, target):
+            apply_condition(target, "оглушение", turns=3)
         msgs.append(f"{target.name} выведен из строя.")
     # drop defeated from initiative if unconscious
     if target.hp == 0 and scene.combat.active:
@@ -564,14 +530,6 @@ def knockout(scene: Scene, target: Character, text: str) -> tuple[str, list[str]
         if end:
             msgs.append(end)
     return text, msgs
-
-
-def weapon_damage(scene: Scene, attacker: Character, w: Item | None, skill: str) -> tuple[int, str]:
-    """«Система»: the weapon's fixed average, multiplied by the attacking attribute; passives and buffs on top."""
-    base, _ = amount(scene, w.damage if w and w.damage else "1d4")
-    extra = (M.passive_bonus(attacker, "ranged" if is_ranged(w) else "melee")
-             + cond_potency(attacker, "усиление") - cond_potency(attacker, "ослабление"))
-    return scaled(scene, base, attacker.attrs.get(skill, 10), extra)
 
 
 # ---------------- active defence («Система»): a blow at the hero waits for the player's reaction ----------------
@@ -635,7 +593,7 @@ def weapon_named(c: Character, text: str) -> str:
     """The weapon the player named («ножом», «из арбалета»), by the stem of its first word; '' if none."""
     t = (text or "").lower()
     for i in c.inventory:
-        if i.kind == "оружие" or any(k in i.name.lower() for k in WEAPON_DEFAULTS):
+        if i.kind == "оружие":
             for w in re.findall(r"[а-яё]{3,}", i.name.lower()):
                 if re.search(r"(?<![а-яё])" + w[:4], t):
                     return i.name
@@ -660,33 +618,33 @@ def _foe_attack(foe: Character) -> tuple[Item | None, str, int]:
     if w:
         ensure_item_stats(w)
     skill = "Ловкость" if is_ranged(w) else "Сила"
-    return w, skill, foe.attrs.get(skill, 10) + cond_potency(foe, "усиление") - cond_potency(foe, "ослабление")
+    return w, skill, foe.attrs.get(skill, 10)
 
 
 def reaction_odds(scene: Scene) -> dict:
     """Success chance (percent, 5–95) of each reaction to the pending blow; None when it is impossible.
     Уклониться: Ловкость vs the blow, heavy armour hinders, arrows are harder. Блок: Сила vs the blow, a shield helps;
     halves the damage. Парировать: the weapon's attribute vs the blow, hard; no damage and a counterattack, but a
-    failure opens you up (×1,5). Принять на броню: the plain chance the blow misses; armour soaks the damage."""
+    failure opens you up (×1,5). Принять на броню: the plain chance the blow misses; armour takes its part as always."""
     cb = scene.combat
     foe, hero = scene.characters.get(cb.threat), scene.player
     if foe is None:
         return {}
     w, skill, a = _foe_attack(foe)
+    a += 2 * buff_sign(foe)
     ranged = is_ranged(w)
     arm = armor_value(hero)
     hw = equipped_weapon(hero)
-    shield = any(i.equipped and "щит" in i.name.lower() for i in hero.inventory)
+    shield = any(i.equipped and i.slot == "щит" for i in hero.inventory)
     at = lambda k: hero.attrs.get(k, 10)
     tire = lambda k: REACT_TIRE * cb.react_streak if cb.react_last == k and k != "take" else 0
     raw = {
-        "dodge": 0.5 + M.CHANCE_STEP * (at("Ловкость") - a) - M.CHANCE_STEP * max(0, arm - 2) - (0.1 if ranged else 0),
-        "block": 0.6 + M.CHANCE_STEP * (at("Сила") - a) + (0.15 if shield else 0) - (0.1 if ranged and not shield else 0),
-        "parry": (None if ranged or not hw or is_ranged(hw) else
-                  0.35 + M.CHANCE_STEP * (at("Сила") - a)),
-        "take": 1 - (0.65 + M.CHANCE_STEP * (a - at("Ловкость")) - M.CHANCE_STEP * arm),
+        "dodge": 0.5 + B.STEP * (at("Ловкость") - a) - B.STEP * max(0, arm - 2) - (0.1 if ranged else 0),
+        "block": 0.6 + B.STEP * (at("Сила") - a) + (0.15 if shield else 0) - (0.1 if ranged and not shield else 0),
+        "parry": (None if ranged or not hw or is_ranged(hw) else 0.35 + B.STEP * (at("Сила") - a)),
+        "take": 1 - B.hit_chance(a, at("Ловкость")),
     }
-    return {k: (None if p is None else round(100 * max(0.05, min(0.95, p - tire(k))))) for k, p in raw.items()}
+    return {k: (None if p is None else round(100 * B.clamp_chance(p - tire(k)))) for k, p in raw.items()}
 
 
 def threat_info(scene: Scene) -> dict | None:
@@ -718,7 +676,7 @@ def react(scene: Scene, choice: str) -> dict:
     cb.react_streak = cb.react_streak + 1 if cb.react_last == choice else 1
     cb.react_last = choice
     ok = M.rng(scene).random() * 100 < pct
-    w, skill, a = _foe_attack(foe)
+    w, _, _ = _foe_attack(foe)
     wname = w.name if w else "безоружный удар"
     label = REACTIONS[choice][0].lower()
     head = (f"🛡 {hero.name}: {label} — {foe.name} ({wname}), шанс {pct}%"
@@ -728,44 +686,42 @@ def react(scene: Scene, choice: str) -> dict:
 
 def _land(scene: Scene, foe: Character, hero: Character, choice: str, ok: bool, head: str, how: str = "") -> dict:
     """What the blow does after the reaction: dodge — all or nothing; block — half on success; parry — nothing and a
-    counterattack, or ×1,5 on failure; take — the armour soaks. `how` — the player's own words for a free reaction."""
-    w, skill, a = _foe_attack(foe)
+    counterattack, or ×1,5 on failure; take — the plain blow. Armour always takes its part.
+    `how` — the player's own words for a free reaction."""
+    w, _, _ = _foe_attack(foe)
     how_free = how
-    if ok:
-        how = {"dodge": "удар проходит мимо", "parry": "клинок отведён — контратака!",
-               "take": "удар скользит по броне", "block": None}[choice]
-        if how:
-            brief = {"dodge": f"{hero.name} уклоняется от удара {foe.name}",
-                     "parry": f"{hero.name} парирует удар {foe.name} и контратакует",
-                     "take": f"удар {foe.name} не пробивает защиту {hero.name}"}[choice]
-            if how_free:
-                brief = f"{hero.name}: {how_free} — удаётся, удар {foe.name} не достигает цели" + (
-                    ", и герой контратакует" if choice == "parry" else "")
-            how = how[0].upper() + how[1:] + ("" if how.endswith("!") else ".")
-            return {"text": head + f"успех! {how}", "msgs": [], "brief": brief, "counter": choice == "parry"}
-    dmg, dmg_s = weapon_damage(scene, foe, w, skill)
+    if ok and choice != "block":
+        how = {"dodge": "удар проходит мимо", "parry": "клинок отведён — контратака!", "take": "удар скользит мимо"}[choice]
+        brief = {"dodge": f"{hero.name} уклоняется от удара {foe.name}",
+                 "parry": f"{hero.name} парирует удар {foe.name} и контратакует",
+                 "take": f"удар {foe.name} не достигает {hero.name}"}[choice]
+        if how_free:
+            brief = f"{hero.name}: {how_free} — удаётся, удар {foe.name} не достигает цели" + (
+                ", и герой контратакует" if choice == "parry" else "")
+        how = how[0].upper() + how[1:] + ("" if how.endswith("!") else ".")
+        return {"text": head + f"успех! {how}", "msgs": [], "brief": brief, "counter": choice == "parry"}
+    dmg, dmg_s = physical(scene, foe, w)
     if choice == "block" and ok:
         dmg = max(1, dmg // 2); dmg_s += f", блок ½={dmg}"
         verdict = "успех! Удар ослаблен." if how_free else "успех! Удар принят на блок."
-        brief = f"{hero.name} блокирует удар {foe.name}, урон снижен до {dmg}"
     elif choice == "parry":
         dmg = round(dmg * 1.5); dmg_s += f", раскрылся ×1,5={dmg}"
-        verdict, brief = "провал!", f"{hero.name} пытается парировать, но раскрывается — {foe.name} попадает, урон {dmg}"
-    elif choice == "take":
-        arm = armor_value(hero)
-        if arm:
-            dmg = max(1, dmg - arm); dmg_s += f" − броня {arm}={dmg}"
-        verdict, brief = "провал!", f"{foe.name} попадает по {hero.name}, броня смягчает, урон {dmg}"
+        verdict = "провал!"
     else:
         verdict = "провал!"
-        brief = f"{hero.name} пытается {'уклониться' if choice == 'dodge' else 'блокировать'}, но {foe.name} попадает, урон {dmg}"
+    dmg, land = hurt(scene, hero, dmg, True)
     if how_free:
         brief = (f"{hero.name}: {how_free} — " + (f"удар {foe.name} ослаблен, урон {dmg}" if choice == "block" and ok
                                               else f"не выходит, {foe.name} попадает, урон {dmg}"))
-    dmg, soak = absorb(hero, dmg)
-    old = hero.hp
-    hero.hp = max(0, hero.hp - dmg)
-    text = head + f"{verdict} Урон {dmg_s}{soak} → HP {old}→{hero.hp}/{hero.max_hp}"
+    elif choice == "block" and ok:
+        brief = f"{hero.name} блокирует удар {foe.name}, урон снижен до {dmg}"
+    elif choice == "parry":
+        brief = f"{hero.name} пытается парировать, но раскрывается — {foe.name} попадает, урон {dmg}"
+    elif choice == "take":
+        brief = f"{foe.name} попадает по {hero.name}, урон {dmg}"
+    else:
+        brief = f"{hero.name} пытается {'уклониться' if choice == 'dodge' else 'блокировать'}, но {foe.name} попадает, урон {dmg}"
+    text = head + f"{verdict} {dmg_s}{land}"
     text, msgs = knockout(scene, hero, text)
     if hero.hp == 0:
         brief += f", {hero.name} падает без сознания"
@@ -773,7 +729,7 @@ def _land(scene: Scene, foe: Character, hero: Character, choice: str, ok: bool, 
 
 
 # ---------------- free-form deeds: the narrator judges what the player wrote, the code rolls ----------------
-DIFFICULTY = {"легко": 10, "обычно": 13, "трудно": 16, "очень трудно": 19}
+DIFFICULTY = B.DIFFICULTY
 OUTCOMES = {"уклон": "avoid", "избеж": "avoid", "avoid": "avoid", "dodge": "avoid", "мимо": "avoid",
             "смягч": "reduce", "ослаб": "reduce", "блок": "reduce", "reduce": "reduce", "block": "reduce",
             "контр": "counter", "counter": "counter", "парир": "counter", "parry": "counter"}
@@ -784,6 +740,7 @@ EFFECTS = {"урон": "урон", "damage": "урон", "оглуш": "оглу
            "ослаб": "ослабление", "weaken": "ослабление", "обезоруж": "ослабление", "ослеп": "ослабление",
            "помех": "ослабление", "усил": "усиление", "buff": "усиление", "преимущ": "усиление", "нет": "нет",
            "none": "нет"}
+DEED_POTENCY = 3          # a successful trick: ±3 damage and ±10% to hit for 2 rounds
 
 
 def norm_difficulty(d: str) -> str:
@@ -799,7 +756,7 @@ def norm_difficulty(d: str) -> str:
     return "обычно"
 
 
-def _pick(table: dict, raw: str, default: str) -> str:
+def pick(table: dict, raw: str, default: str) -> str:
     r = (raw or "").lower().strip()
     return next((v for k, v in table.items() if r.startswith(k) or k in r), default)
 
@@ -818,17 +775,16 @@ def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: 
     if foe is None or foe.hp <= 0 or hero.hp <= 0 or not cb.active:
         end = check_end(scene)
         return {"text": "Угроза миновала.", "msgs": [end] if end else [], "brief": "угроза миновала", "counter": False}
-    outcome = _pick(OUTCOMES, outcome, "avoid")
+    outcome = pick(OUTCOMES, outcome, "avoid")
     difficulty = norm_difficulty(difficulty)
     how = (how or "своя реакция").strip()[:80]
-    w, skill, a = _foe_attack(foe)
+    _, _, a = _foe_attack(foe)
     if outcome in ("trade", "none"):
         cb.react_last, cb.react_streak = "", 0
         if outcome == "none":
-            ok, pct = M.chance(scene, 1 - hit_chance(a, 0, hero))
+            ok, pct = M.chance(scene, 1 - B.hit_chance(a, hero.attrs.get("Ловкость", 10)))
             head = f"🛡 {hero.name}: {how} — не защищается, шанс что удар пройдёт мимо {pct}% — "
-            r = _land(scene, foe, hero, "take", ok, head, how)
-            return r
+            return _land(scene, foe, hero, "take", ok, head, how)
         head = f"🛡 {hero.name}: {how} — размен ударами, защиты нет — "
         r = _land(scene, foe, hero, "take", False, head, how)
         r["counter"] = hero.hp > 0                     # the hero's own blow comes right after (the engine rolls it)
@@ -840,7 +796,7 @@ def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: 
     difficulty = harder(difficulty, MIN_DIFF.get(outcome, "легко"))
     attr = M.resolve_check_attr(attr_raw)
     dc = DIFFICULTY[difficulty] + (a - 10)
-    ok, pct = M.chance(scene, M.check_chance(hero.attrs.get(attr, 10), dc))
+    ok, pct = M.chance(scene, B.check_chance(hero.attrs.get(attr, 10), dc))
     cb.react_last, cb.react_streak = "", 0             # an inventive answer resets the foes' read
     head = f"🛡 {hero.name}: {how} — {attr} {hero.attrs.get(attr, 10)}, {difficulty}, против {foe.name}: шанс {pct}% — "
     return _land(scene, foe, hero, OUTCOME_KIND[outcome], ok, head, how)
@@ -877,11 +833,7 @@ def escape(scene: Scene, attr_raw: str, difficulty: str, kind: str = "", how: st
         dc = DIFFICULTY[difficulty] + edge + max(0, armor_value(hero) - 2)
         r = M.check(scene, hero, attr_raw or "Ловкость", dc)
         ok = r["success"]
-        if r.get("chance") is not None:
-            text = (f"🏃 {hero.name}: {how} — {r['attr']} {r['attr_val']} против погони {r['dc']} ({difficulty}) — "
-                    f"шанс {r['chance']}% — {'успех' if ok else 'провал'}.")
-        else:
-            text = f"🏃 {hero.name}: {how} — " + r["text"].split(": ", 1)[-1]
+        text = f"🏃 {hero.name}: {how} — " + r["text"].split(": ", 1)[-1]
     if ok:
         gone = {f.id for f in foes}
         scene.present = [i for i in scene.present if i not in gone]
@@ -901,9 +853,9 @@ def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str
          how: str = "") -> dict:
     """A free-form deed on the actor's turn (a feint, sand in the eyes, a shield bash, kicking a brazier over...):
     the narrator judged attribute, difficulty and effect; the code rolls the check and applies the effect.
-    Returns {ok, text, msgs, brief, damage}."""
+    A damaging trick hits like the actor's weapon. Returns {ok, text, msgs, brief, damage}."""
     difficulty = norm_difficulty(difficulty)
-    effect = _pick(EFFECTS, effect, "нет")
+    effect = pick(EFFECTS, effect, "нет")
     how = (how or "задуманный приём").strip()[:80]
     if difficulty == "невозможно":
         return {"ok": False, "text": f"✦ {actor.name}: {how} — так не выйдет.", "msgs": [], "damage": 0,
@@ -914,26 +866,14 @@ def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str
     if target is not None and target.id != actor.id and effect != "усиление":
         resist = target.attrs.get("Воля" if M.resolve_check_attr(attr_raw) in ("Влияние", "Разум") else "Ловкость", 10) - 10
     r = M.check(scene, actor, attr_raw, DIFFICULTY[difficulty] + resist)
-    if r.get("chance") is not None:
-        text = (f"✦ {actor.name}: {how} — {r['attr']} {r['attr_val']} против сложности {r['dc']} ({difficulty}) — "
-                f"шанс {r['chance']}% — {'успех' if r['success'] else 'провал'}.")
-    else:
-        text = f"✦ {actor.name}: {how} — " + r["text"].split(": ", 1)[-1]
+    text = f"✦ {actor.name}: {how} — " + r["text"].split(": ", 1)[-1]
     msgs, dmg = [], 0
     if not r["success"]:
         return {"ok": False, "text": text, "msgs": msgs, "damage": 0, "brief": f"{actor.name}: {how} — не удаётся"}
-    tgt = target or actor
     if effect == "урон" and target is not None:
-        w = equipped_weapon(actor)
-        skill = "Ловкость" if is_ranged(w) else "Сила"
-        if scene.rule_mode == "система":
-            dmg, dmg_s = weapon_damage(scene, actor, w, skill)
-        else:
-            dmg, dmg_s = amount(scene, w.damage if w and w.damage else "1d4")
-        dmg, soak = absorb(target, dmg)
-        old = target.hp
-        target.hp = max(0, target.hp - dmg)
-        text += f" Урон {dmg_s}{soak} → {target.name} HP {old}→{target.hp}/{target.max_hp}"
+        dmg, dmg_s = physical(scene, actor, equipped_weapon(actor))
+        dmg, land = hurt(scene, target, dmg, True)
+        text += f" {dmg_s}{land}"
         text, more = knockout(scene, target, text)
         msgs += more
         brief = f"{actor.name}: {how} — удаётся, урон {dmg}" + (f", {target.name} падает" if target.hp == 0 else "")
@@ -941,16 +881,17 @@ def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str
         msgs.append(apply_condition(target, "оглушение", 1))
         brief = f"{actor.name}: {how} — удаётся, {target.name} теряет ход"
     elif effect == "ослабление" and target is not None:
-        msgs.append(apply_condition(target, "ослабление", 2, 2))
+        msgs.append(apply_condition(target, "ослабление", 2, DEED_POTENCY))
         brief = f"{actor.name}: {how} — удаётся, {target.name} ослаблен(а) на 2 хода"
     elif effect == "усиление":
-        msgs.append(apply_condition(actor, "усиление", 2, 2))
+        msgs.append(apply_condition(actor, "усиление", 2, DEED_POTENCY))
         brief = f"{actor.name}: {how} — удаётся, следующие действия сильнее"
     else:
         brief = f"{actor.name}: {how} — удаётся"
     return {"ok": True, "text": text, "msgs": msgs, "damage": dmg, "brief": brief}
 
 
+# ---------------- abilities ----------------
 def find_ability(c: Character, name: str) -> Ability | None:
     n = M.norm(name)
     if not n:
@@ -967,21 +908,23 @@ def ability_mp(a: Ability) -> int:
 
 
 def resist(scene: Scene, caster: Character, a: Ability, target: Character) -> tuple[bool, str]:
-    """Debuffs and control: caster's power vs the target's Воля."""
+    """Debuffs and control: the caster's attribute against the target's Воля."""
+    cv, tv = caster.attrs.get(a.scale or "Разум", 10), target.attrs.get("Воля", 10)
     if scene.rule_mode == "система":
-        cv, tv = caster.attrs.get(a.scale or "Разум", 10), target.attrs.get("Воля", 10)
-        ok, pct = M.chance(scene, 0.5 + M.CHANCE_STEP * (cv - tv))
+        ok, pct = M.chance(scene, B.CHECK_BASE + B.STEP * (cv - tv))
         return ok, f"{a.scale or 'Разум'} {cv} против Воли {tv} — шанс {pct}%"
-    power = M.amp(caster.attrs.get(a.scale or "Разум", 10))
-    defense = 10 + M.amp(target.attrs.get("Воля", 10))
-    if scene.rule_mode == "d20":
-        die = M.rng(scene).randint(1, 20)
-        ok = die == 20 or (die != 1 and die + power >= defense)
-        return ok, f"1d20({die}){power:+d}={die + power} против Воли {defense}"
+    die = M.rng(scene).randint(1, 20)
+    power, defense = M.soft_weight(cv, 10), 10 + M.soft_weight(tv, 10)
+    return die == 20 or (die != 1 and die + power >= defense), f"1d20({die}){power:+d}={die + power} против Воли {defense}"
+
+
+def is_physical(a: Ability) -> bool:
+    """A technique powered by the body (Сила/Ловкость) is a blow: armour takes its part. Spells pass armour."""
+    return a.scale in ("Сила", "Ловкость")
 
 
 def cast(scene: Scene, caster: Character, a: Ability, target: Character | None) -> dict:
-    """Use an active ability: code spends MP, rolls its power and adds the attribute amplifier.
+    """Use an active ability: code spends MP and applies its number amplified by the attribute.
     Abilities without mechanics (from cards) only cost MP; the narrator describes their effect."""
     if a.kind != "active":
         return {"ok": False, "text": f"«{a.name}» — пассивная способность, она действует сама.", "msgs": [], "damage": 0}
@@ -991,51 +934,37 @@ def cast(scene: Scene, caster: Character, a: Ability, target: Character | None) 
                 "msgs": [], "damage": 0}
     if any(x.name == "оглушение" for x in caster.conditions):
         return {"ok": False, "text": f"✨ {caster.name} оглушён и не может применить «{a.name}».", "msgs": [], "damage": 0}
-    caster.mp -= mp
     eff = a.effect or "utility"
     if eff in ("heal", "shield", "buff") and target is None:
         target = caster
     if eff in ("damage", "debuff", "control") and target is None:
-        caster.mp += mp
         return {"ok": False, "text": f"✨ «{a.name}»: нужна цель.", "msgs": [], "damage": 0}
-    amp = M.amp(caster.attrs.get(a.scale, 10)) if a.scale else 0
+    caster.mp -= mp
     head = f"✨ {caster.name}: «{a.name}»" + (f" → {target.name}" if target and target is not caster else "") + (f" (−{mp} MP)" if mp else "")
     msgs, dmg = [], 0
     if eff == "damage":
         if not scene.combat.active:
             start_combat(scene, [caster.id, target.id], first=caster.id)
-        bonus = amp + M.passive_bonus(caster, "spell" if a.scale in ("Разум", "Воля", "Влияние") else
-                                      ("ranged" if a.scale == "Ловкость" else "melee"))
-        roll, roll_s = amount(scene, a.power or "1d6")
-        if scene.rule_mode == "система":
-            dmg, roll_s = scaled(scene, roll, caster.attrs.get(a.scale, 10) if a.scale else 10, bonus - amp)
-            bonus_s = ""
-        else:
-            dmg = max(1, roll + bonus); bonus_s = f"{bonus:+d}"
-        dmg, soak = absorb(target, dmg)
-        old = target.hp; target.hp = max(0, target.hp - dmg)
-        text = f"{head}: {roll_s}{bonus_s} ({a.scale or '—'}) → урон {dmg}{soak}, HP {old}→{target.hp}/{target.max_hp}"
+        phys = is_physical(a)
+        key = ("ranged" if a.scale == "Ловкость" else "melee") if phys else "spell"
+        v, s = magical(scene, caster, a, key)
+        if phys:
+            v += cond_potency(caster, "усиление") - cond_potency(caster, "ослабление")
+        dmg, land = hurt(scene, target, max(1, v), phys)
+        text = f"{head}: {s}{land}"
         text, more = knockout(scene, target, text); msgs += more
     elif eff == "heal":
-        roll, roll_s = amount(scene, a.power or "1d6")
-        if scene.rule_mode == "система":
-            healed, roll_s = scaled(scene, roll, caster.attrs.get(a.scale, 10) if a.scale else 10, M.passive_bonus(caster, "heal"))
-        else:
-            healed = max(1, roll + amp + M.passive_bonus(caster, "heal")); roll_s += f"{amp:+d}"
-        old = target.hp; target.hp = min(target.max_hp, target.hp + healed)
-        text = f"{head}: {roll_s} → +{target.hp - old} HP ({old}→{target.hp}/{target.max_hp})"
+        v, s = magical(scene, caster, a, "heal")
+        old = target.hp; target.hp = min(target.max_hp, target.hp + v)
+        text = f"{head}: лечение {s} → +{target.hp - old} HP ({old}→{target.hp}/{target.max_hp})"
     elif eff == "shield":
-        roll, roll_s = amount(scene, a.power or "1d4")
-        if scene.rule_mode == "система":
-            val, roll_s = scaled(scene, roll, caster.attrs.get(a.scale, 10) if a.scale else 10, 0)
-        else:
-            val = max(1, roll + amp); roll_s += f"{amp:+d}"
-        apply_condition(target, "щит", turns=3, potency=val)
-        text = f"{head}: щит {roll_s} — поглотит {val} урона (3 раунда)"
+        v, s = magical(scene, caster, a, "")
+        apply_condition(target, "щит", turns=3, potency=v)
+        text = f"{head}: щит {s} — поглотит {v} урона (3 раунда)"
     elif eff == "buff":
-        val = max(1, int(a.power or 1) + max(0, amp // 2))
-        apply_condition(target, "усиление", turns=3, potency=val)
-        text = f"{head}: усиление +{val} к атаке и урону (3 раунда)"
+        v, _ = magical(scene, caster, a, "", levelled=False)
+        apply_condition(target, "усиление", turns=3, potency=v)
+        text = f"{head}: усиление +{v} к урону и +{round(B.BUFF_HIT * 100)}% к попаданию (3 раунда)"
     elif eff in ("debuff", "control"):
         if not scene.combat.active and target.side == "hostile":
             start_combat(scene, [caster.id, target.id], first=caster.id)
@@ -1043,11 +972,11 @@ def cast(scene: Scene, caster: Character, a: Ability, target: Character | None) 
         if not ok:
             text = f"{head}: {roll_s} — {target.name} сопротивляется."
         elif eff == "debuff":
-            val = max(1, int(a.power or 1))
-            apply_condition(target, "ослабление", turns=2, potency=val)
-            text = f"{head}: {roll_s} — ослабление −{val} к атаке и урону (2 раунда)"
+            v, _ = magical(scene, caster, a, "", levelled=False)
+            apply_condition(target, "ослабление", turns=2, potency=v)
+            text = f"{head}: {roll_s} — ослабление −{v} к урону и −{round(B.BUFF_HIT * 100)}% к попаданию (2 раунда)"
         else:
-            turns = max(1, int(a.power or 1))
+            turns = max(1, B.to_number(a.power) or 1)
             apply_condition(target, "оглушение", turns=turns)
             text = f"{head}: {roll_s} — {target.name} оглушён ({turns} раунд.)"
     else:

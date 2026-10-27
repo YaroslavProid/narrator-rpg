@@ -18,7 +18,7 @@ def test_parse():
 def test_outputs():
     s = mk(); p = s.player
     st = M.run_system_command(s, "status", "")
-    assert "СТАТУС" in st and "HP 20/20" in st and "Сильфа" in st
+    assert "СТАТУС" in st and f"HP {p.max_hp}/{p.max_hp}" in st and "Сильфа" in st and "броня" in st
     ab = M.run_system_command(s, "abilities", "")
     assert "СПОСОБНОСТИ" in ab and "Ночное зрение" in ab
     assert "Нож" in M.run_system_command(s, "inventory", "")

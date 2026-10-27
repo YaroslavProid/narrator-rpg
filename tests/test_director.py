@@ -70,7 +70,7 @@ def test_attr_clamp():
         "character_patches": [{"who": "Ярен", "attrs": {"Сила": 99, "Ловкость": 1}}],
         "scene_patch": {},
     })
-    assert s.player.attrs["Сила"] == 18
+    assert s.player.attrs["Сила"] == 20
     assert s.player.attrs["Ловкость"] == 3
 
 

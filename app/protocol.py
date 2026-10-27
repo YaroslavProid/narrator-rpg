@@ -152,11 +152,11 @@ def tag_grammar(names: list[str], skills: list[str]) -> str:
     return "\n".join([
         'root ::= [ \\n]* ( speak | roll | attack | end )',
         'speak ::= "<speak who=\\"" name "\\" intent=\\"" txt "\\"/>"',
-        'roll ::= "<roll skill=\\"" skill "\\" dc=\\"" dc "\\"/>"',
+        'roll ::= "<roll skill=\\"" skill "\\" difficulty=\\"" dc "\\"/>"',
         'attack ::= "<attack who=\\"" name "\\" target=\\"" name "\\" weapon=\\"" txt "\\"/>" | "<attack target=\\"" name "\\"/>"',
         'end ::= "<end/>"',
         f"name ::= {q(names)}",
         f"skill ::= {q(skills)}",
-        'dc ::= [1-2] [0-9] | [5-9]',
+        'dc ::= "легко" | "обычно" | "трудно" | "очень трудно"',
         'txt ::= [^"<>\\n]{3,120}',
     ])

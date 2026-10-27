@@ -1,6 +1,6 @@
 """Honest turn order, foes by threat, the companion's turn with advice, consumables, inspection and leaving."""
 import asyncio
-from app import combat as C, mechanics as M
+from app import balance as B, combat as C, mechanics as M
 from app.engine import TurnEngine, create_scene
 from app.models import Item
 from tests.test_engine_fake import FakeLLM
@@ -34,10 +34,12 @@ def test_threat_gives_a_real_sheet_scaled_to_the_hero():
     eng, ev = run(s, [('<introduce name="Волк" count="2" side="враг" threat="опасный" desc="серый волк"', "/>"), ("<end", "/>")],
                   "*оглядываюсь*")
     w = ch(s, "Волк 1")
-    assert w.threat == "опасный" and w.level == 5 and w.max_hp == 18 + 5 * 5
+    off, hp0, base, *_ = B.THREATS["опасный"]
+    assert w.threat == "опасный" and w.level == 4 + off and w.max_hp == round(hp0 * B.level_mult(w.level))
+    assert w.hp == w.max_hp and w.attrs["Сила"] == base + 1                     # a beast: a little stronger
     assert w.attrs["Сила"] > w.attrs["Разум"] and any(i.name == "Клыки и когти" and i.equipped for i in w.inventory)
-    boss = ch(s, "Сильфа"); boss.attrs["Ловкость"] = 15   # a built character is never overwritten
-    assert C.apply_threat(s, boss, "босс") == "" and boss.max_hp == 20
+    boss = ch(s, "Сильфа"); boss.attrs["Ловкость"] = 15   # a built character keeps its attributes
+    assert C.apply_threat(s, boss, "босс") == "" and boss.attrs["Ловкость"] == 15 and boss.threat == "босс"
 
 
 def test_foes_act_by_code_and_the_turn_comes_back_to_the_hero():
@@ -132,14 +134,14 @@ def test_consumables_have_effects():
     assert not p.conditions
 
 
-def test_quiet_npcs_are_asked_about_and_only_neutral_ones_leave():
+def test_only_neutral_quiet_npcs_leave_on_their_own():
     s = mk(); sil = ch(s, "Сильфа"); M.leave_party(s, sil)
-    s.turn = 6; sil.last_active_turn = 1
+    s.turn = 6; sil.last_active_turn = 1; s.settings.inactive_leave = 2
     eng = TurnEngine(FakeLLM([]))
-    assert eng.quiet_npcs(s) == ["Сильфа"]
     sil.side = "hostile"
-    s.settings.inactive_leave = 2
-    assert eng.prune_inactive(s) == [] and eng.quiet_npcs(s) == []
+    assert eng.prune_inactive(s) == [] and sil.id in s.present          # a foe does not wander off
+    sil.side = "neutral"
+    assert eng.prune_inactive(s) and sil.id not in s.present
 
 
 def test_companion_waits_for_advice_and_no_blows_at_the_fallen():

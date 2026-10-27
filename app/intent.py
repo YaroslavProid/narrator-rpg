@@ -154,16 +154,3 @@ def for_narrator(it: Intent | None, raw: str | None = None) -> str:
                      + ". Не превращай это в действие и не делай проверок за героя.")
     return "\n".join(lines)
 
-
-def hint(it: Intent | None) -> str:
-    """Short per-turn reminder (in the turn tail, so the cached prompt prefix stays intact)."""
-    if it is None:
-        return "Герой бездействует: без проверок и атак за него; NPC и мир действуют сами."
-    parts = []
-    if it.speech:
-        parts.append("на речь героя отвечают репликами (<speak>), проверка на слова не нужна")
-    if it.thoughts:
-        parts.append("мысли героя никто не слышит")
-    if it.actions:
-        parts.append("проверка (<roll>) — только если действие рискованное и исход неочевиден")
-    return ("Как читать ввод: " + "; ".join(parts) + ".") if parts else ""

@@ -1,7 +1,7 @@
 """Book of paths: five core paths in every world, branches opened through the story (seen → studied → AI writes,
 code balances), abilities with mechanics amplified by attributes, the System agent (answers; code acts)."""
 import asyncio, json
-from app import combat as C, magic as G, mechanics as M
+from app import balance as B, combat as C, magic as G, mechanics as M
 from app.engine import TurnEngine, create_scene
 from app.models import Lead, MagicPath
 from tests.test_engine_fake import FakeLLM
@@ -42,12 +42,12 @@ def test_core_paths_exist_in_every_world_and_cost_points():
     out = M.run_system_command(s, *M.parse_system_command("Система, открой путь Мага"))
     assert p.paths["core-mag"] == 1 and p.ability_points == 0, out
     arrow = next(a for a in p.abilities if a.name == "Магическая стрела")
-    assert arrow.effect == "damage" and arrow.power == "1d8" and arrow.mp == 2 and arrow.scale == "Разум"
+    assert arrow.effect == "damage" and arrow.power == str(B.DAMAGE[1]) and arrow.mp == B.MP_COST[1] and arrow.scale == "Разум"
     out = M.run_system_command(s, *M.parse_system_command("Система, открой путь Мага"))
     assert "Не хватает" in out and p.paths["core-mag"] == 1
     p.ability_points = 1
     assert "Чутьё магии" in M.run_system_command(s, *M.parse_system_command("Система, возьми Чутьё магии"))
-    assert p.paths["core-mag"] == 2 and M.passive_bonus(p, "spell") == 1
+    assert p.paths["core-mag"] == 2 and M.passive_bonus(p, "spell") == B.PASSIVE["spell"](2)
 
 
 def test_parse_book_commands():
@@ -61,24 +61,27 @@ def test_parse_book_commands():
 
 def test_attributes_amplify_pools_and_passives():
     s = mk(); p = s.player
-    base = p.max_hp
+    assert p.max_hp == B.HP_BASE and p.max_mp == B.MP_BASE + B.MP_PER_MIND * 4     # Разум 14
     p.attrs["Выносливость"] = 16; M.sync_derived(p)
-    assert p.max_hp == base + 9
+    assert p.max_hp == B.HP_BASE + 6 * B.HP_PER_END
     p.ability_points = 2; G.unlock_tier(s, p, "Воин"); G.unlock_tier(s, p, "Воин")
-    assert p.max_hp == base + 9 + 6 and p.hp == p.max_hp               # «Закалка»: hp +6
+    hard = B.PASSIVE["hp"](2)                                                         # «Закалка», rank II
+    assert p.max_hp == B.HP_BASE + 6 * B.HP_PER_END + hard and p.hp == p.max_hp
     p.attrs["Выносливость"] = 10; M.sync_derived(p)
-    assert p.max_hp == base + 6 and p.hp <= p.max_hp
-    assert p.max_mp == 10 + 4                                          # Разум 14 → +2 amp → +4 MP
+    assert p.max_hp == B.HP_BASE + hard and p.hp <= p.max_hp
+    M.grant_exp(s, p, p.exp_next, [])                                                 # a level: +HP_LEVEL, full HP
+    assert p.level == 2 and p.max_hp == B.HP_BASE + B.HP_LEVEL + hard and p.hp == p.max_hp
 
 
 def test_cast_spends_mp_rolls_power_and_amplifies():
-    s = mk(); p = s.player; borek = M.resolve_character(s, "Борек")
+    s = mk(); s.rule_mode = "система"; p = s.player; borek = M.resolve_character(s, "Борек")   # exact numbers
     G.unlock_tier(s, p, "Маг")
     arrow = C.find_ability(p, "стрела")
     C.mark_foe(s, borek)                       # a blank foe gets its real sheet when the fight starts
     mp0, hp0 = p.mp, borek.hp
     r = C.cast(s, p, arrow, borek)
-    assert r["ok"] and p.mp == mp0 - 2 and borek.hp == hp0 - r["damage"] and r["damage"] >= 1 + 2   # 1d8 + Разум(+2)
+    expect = round(B.DAMAGE[1] * B.mult(p.attrs["Разум"])) + M.passive_bonus(p, "spell")   # magic ignores armour
+    assert r["ok"] and p.mp == mp0 - B.MP_COST[1] and borek.hp == hp0 - r["damage"] and r["damage"] == expect
     assert s.combat.active
     p.mp = 1
     r = C.cast(s, p, arrow, borek)
@@ -86,15 +89,16 @@ def test_cast_spends_mp_rolls_power_and_amplifies():
 
 
 def test_shield_absorbs_and_control_is_resisted_by_will():
-    s = mk(); p = s.player; borek = M.resolve_character(s, "Борек")
+    s = mk(); s.rule_mode = "система"; p = s.player; borek = M.resolve_character(s, "Борек")   # exact numbers
     p.ability_points = 3
     for _ in range(3):
         G.unlock_tier(s, p, "Маг")
     r = C.cast(s, p, C.find_ability(p, "щит"), None)                   # shield defaults to self
     soak = next(x.potency for x in p.conditions if x.name == "щит")
     assert r["ok"] and soak >= 1
+    assert soak == round(B.SHIELD[3] * B.mult(p.attrs["Разум"]))
     left, note = C.absorb(p, soak + 3)
-    assert left == 3 and "поглотил" in note and not any(x.name == "щит" for x in p.conditions)
+    assert left == 3 and "щит" in note and not any(x.name == "щит" for x in p.conditions)
     s.player.ability_points = 1; G.unlock_tier(s, p, "Тень")
     s.player.ability_points = 2; G.unlock_tier(s, p, "Тень"); G.unlock_tier(s, p, "Тень")
     borek.attrs["Воля"] = 20
@@ -118,14 +122,14 @@ def test_discover_learn_and_branch_written_after_turn():
     asyncio.run(eng.develop(s))
     b = G.get_path(s, s.leads[0].branch)
     assert b and b.name == "Школа разрушения" and b.parents == {"core-mag": 2} and not s.pending_branches
-    assert "Огненный шар" in llm.prompts[0] or "огненный шар" in llm.prompts[0]
+    assert "огненный шар" in llm.prompts[0]
     # code sets every number: tier I needs Маг II, 1 point; tier III also needs the trial
     t1, t2, t3 = b.tiers
     assert [(r.kind, r.path, r.value) for r in t1.reqs if r.kind == "rank"] == [("rank", "core-mag", 2)]
     assert G.tier_cost(t1) == 1 and G.tier_cost(t3) == 2 and any(r.kind == "story" for r in t3.reqs)
     fire = t1.abilities[0]
-    assert fire.power == G.DAMAGE[3] and fire.mp == G.MP_COST[3] and "50" in fire.description  # text kept, numbers ignored
-    assert t2.abilities[0].kind == "passive" and t2.abilities[0].bonus == {"spell": 2}
+    assert fire.power == str(B.DAMAGE[3]) and fire.mp == B.MP_COST[3] and "50" in fire.description  # text kept, numbers ignored
+    assert t2.abilities[0].kind == "passive" and t2.abilities[0].bonus == {"spell": B.PASSIVE["spell"](4)}
     p = s.player; p.ability_points = 5
     ok, msg = G.unlock_tier(s, p, "Огненный шар")
     assert not ok and "Путь Мага II" in msg
@@ -157,7 +161,7 @@ def test_fulfill_trial_and_cast_tag_in_a_turn():
     assert f"{b.id}-3" in s.flags
     assert borek.hp < hp0 and borek.side == "hostile"
     assert any("Магическая стрела" in m.get("text", "") for m in ev if m["type"] == "segment")
-    assert "Магическая стрела" in s.turns[-6]["content"] or any("Активные способности" in t["content"] for t in s.turns)
+    assert any("Активные способности — Ярен: Магическая стрела" in t["content"] for t in s.turns)
 
 
 def test_agent_explains_missing_branch_and_cannot_cheat():
@@ -179,7 +183,7 @@ def test_flavor_renames_core_and_learned_abilities():
     G.apply_flavor(s, data)
     assert G.get_path(s, "core-mag").name == "Путь Нейроманта" and s.core_flavored
     a = next(a for a in p.abilities if a.path == "core-mag")
-    assert a.name == "Импульс" and a.effect == "damage" and a.power == "1d8"
+    assert a.name == "Импульс" and a.effect == "damage" and a.power == str(B.DAMAGE[1])
 
 
 def test_rewind_restores_book_and_legacy_paths_dropped():

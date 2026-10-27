@@ -12,11 +12,9 @@ from tests.test_memory import play
 def test_attack_d20_and_damage():
     s = mk(); p, foe = s.player, next(c for c in s.characters.values() if c.name == "Борек")
     p.inventory.append(C.ensure_item_stats(Item(name="Короткий меч")))
-    C.equip_item = None
     M.equip_item(p, "Короткий меч")
     r = C.attack(s, p, foe, "Короткий меч")
     assert s.combat.active and "→" in r["text"] and foe.hp <= foe.max_hp
-    assert C.ac(p) >= 10
 
 
 def test_combat_initiative_and_end():
@@ -29,12 +27,11 @@ def test_combat_initiative_and_end():
 def test_conditions_tick():
     s = mk(); p = s.player
     C.apply_condition(p, "кровотечение", turns=2, potency=3)
+    hp0 = p.hp
     C.start_combat(s, [p.id, next(c.id for c in s.characters.values() if not c.is_player)])
-    # force round advance through full order
-    for _ in range(len(s.combat.order)):
-        C.advance_turn(s)
-    assert p.hp == 17 or p.hp < 20  # bled once at round boundary
-    assert any(c.name == "кровотечение" for c in p.conditions) or p.conditions == []
+    for _ in range(len(s.combat.order)):          # one full round: bleeding ticks once at its end
+        C.step(s)
+    assert p.hp == hp0 - 3 and any(c.name == "кровотечение" and c.turns_left == 1 for c in p.conditions)
 
 
 def test_equip_use_give_commands():

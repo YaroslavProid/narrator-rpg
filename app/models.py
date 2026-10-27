@@ -26,8 +26,8 @@ class Item(BaseModel):
     name: str
     qty: int = 1
     kind: str = "предмет"
-    damage: str = ""
-    armor: int = 0
+    damage: str = ""        # weapons: base damage as a number ("9"), amplified by Сила / Ловкость
+    armor: int = 0          # armour: taken off every physical blow
     equipped: bool = False
     slot: str = ""
     effect: str = ""        # consumables: heal | mana | cure | damage | buff (set by combat.ensure_item_stats)
@@ -43,12 +43,13 @@ class Ability(BaseModel):
     cooldown: str = ""
     # mechanics (abilities from paths; free-form ones from cards leave them empty = narrative only)
     effect: Literal["", "damage", "heal", "shield", "buff", "debuff", "control", "utility", "passive"] = ""
-    power: str = ""      # dice for damage/heal/shield ("2d6"), potency for buff/debuff, turns for control
+    power: str = ""      # the number: damage/heal/shield amount, buff/debuff potency, rounds of stun (balance.py)
     scale: str = ""      # attribute that amplifies it
     mp: int = 0
     bonus: dict[str, int] = {}   # passive: hp, mp, ac, melee, ranged, spell, heal, init
     path: str = ""       # path id it comes from
     tier: int = 0
+    level: int = 0       # power level 1..6 on the balance scale (path abilities)
 
 
 class PathReq(BaseModel):
@@ -108,20 +109,17 @@ class Character(BaseModel):
     personality: str = ""
     speech: str = ""
     secrets: str = ""
-    aliases: list[str] = []
     is_player: bool = False
     kind: str = ""                    # type/вид: «наёмник», «демон»…
     level: int = 1
-    hp: int = 20
-    max_hp: int = 20
-    mp: int = 10
-    max_mp: int = 10
+    hp: int = 40
+    max_hp: int = 40                  # derived: mechanics.max_pools (level, Выносливость, passives / threat)
+    mp: int = 20
+    max_mp: int = 20
     exp: int = 0
     exp_next: int = 100
     attr_points: int = 0
     ability_points: int = 0
-    hp_bonus: int = 0                 # part of max_hp that comes from attributes and passives (recomputed)
-    mp_bonus: int = 0
     attrs: dict[str, int] = Field(default_factory=lambda: {a: 10 for a in ATTRS})
     abilities: list[Ability] = []
     inventory: list[Item] = []
@@ -245,7 +243,7 @@ class Scene(BaseModel):
     director_note: str = ""  # one-shot hint for narrator (from Director chat)
     regen: int = 0
     lull: int = 0                    # quiet turns in a row (the «затишье» reminder); old scenes start at 0
-    version: int = 4
+    version: int = 5                 # 5: the numeric economy (balance.py); older saves are migrated on load
 
     @property
     def player(self) -> Character:

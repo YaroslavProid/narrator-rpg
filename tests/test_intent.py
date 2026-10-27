@@ -1,7 +1,7 @@
 """Player input: deed / speech (aloud, whisper, shout) / thoughts, and what the narrator may do with it;
 «Система» combat: hit chance + fixed damage."""
 import asyncio
-from app import combat as C, intent as I, mechanics as M
+from app import balance as B, combat as C, intent as I, mechanics as M
 from app.engine import TurnEngine, create_scene
 from app.models import Item
 from tests.test_engine_fake import FakeLLM
@@ -74,21 +74,23 @@ def test_npc_does_not_hear_whisper_or_thoughts():
 def test_system_mode_fixed_damage_and_hit_chance():
     s = mk("система"); p = s.player; foe = M.resolve_character(s, "Разбойник")
     p.inventory.append(C.ensure_item_stats(Item(name="Меч", equipped=True)))
+    foe.inventory = []
     dmgs, hits = set(), 0
     for _ in range(200):
         foe.hp = foe.max_hp = 999
         r = C.attack(s, p, foe)
         hits += r["hit"]
         if r["hit"]:
-            dmgs.add(r["damage"]); assert "шанс попасть" in r["text"]
-    assert len(dmgs) == 1                         # always the same damage: 1d8 -> 5 + Strength amplifier
+            dmgs.add(r["damage"]); assert "шанс" in r["text"]
+    expect = round(B.WEAPONS["меч"][1] * B.mult(p.attrs["Сила"]))
+    assert dmgs == {expect}                       # always the same number: the sword's 9 × Strength
     assert 40 < hits < 200                        # but a blow can miss
-    assert C.amount(s, "1d8")[0] == 5 and C.amount(s, "2d6+1")[0] == 8
 
 
-def test_d20_mode_still_rolls():
+def test_d20_mode_spreads_the_same_numbers():
     s = mk("d20")
-    assert len({C.amount(s, "1d8")[0] for _ in range(60)}) > 3
+    vals = {C.spread(s, 20)[0] for _ in range(60)}
+    assert len(vals) > 3 and min(vals) >= 16 and max(vals) <= 24      # ±20% around the number
 
 
 def test_starred_thoughts_like_in_sillytavern():
