@@ -790,7 +790,7 @@ function paintTurn(state) {
   if (th) {
     inp.dataset.advice = '';
     paintModes();
-    bar.innerHTML = `<span><b style="color:var(--rubric-hi)">⚠ ${esc(th.foe)}</b> бросается на вас (${esc(th.weapon)}). Ваша реакция:</span>
+    bar.innerHTML = `<span><b style="color:var(--rubric-hi)">⚠ ${esc(th.foe)}</b> бросается на вас (${esc(th.weapon)}). Опишите, как защищаетесь, — или быстро:</span>
       <span class="reacts">${th.options.map(o => `<button class="tbtn" data-react="${esc(o.text)}" title="${esc(REACT_TIP[o.key] || '')}">${esc(o.label)} <b>${o.pct}%</b></button>`).join('')}</span>`;
     bar.querySelectorAll('[data-react]').forEach(b => b.onclick = () => send(b.dataset.react));
     inp.placeholder = 'Или опишите реакцию своими словами…';

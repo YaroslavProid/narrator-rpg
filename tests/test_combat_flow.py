@@ -258,7 +258,7 @@ def test_foe_opening_blow_waits_for_reaction_and_fight_cannot_be_ended_early():
     g1, g2 = ch(s, "Громила 1"), ch(s, "Громила 2")
     assert s.combat.active and s.combat.threat == g1.id and s.player.hp == s.player.max_hp
     assert {g1.id, g2.id} <= {o.id for o in s.combat.order}
-    assert "игрок выбирает реакцию" in eng.llm.prompts[2] and "на ногах ещё" in eng.llm.prompts[3]
+    assert "реакцию героя" in eng.llm.prompts[2] and "на ногах ещё" in eng.llm.prompts[3]
 
 
 def test_a_fleeing_foe_leaves_the_order_and_can_end_the_fight():
@@ -278,3 +278,55 @@ def test_a_fallen_foe_cannot_strike_or_restart_the_fight():
     s.combat.threat = g.id; s.combat.active = True        # a stale threat from someone who fell meanwhile
     r = C.react(s, "dodge")
     assert r["text"] == "Угроза миновала." and not s.combat.active
+
+
+def test_own_words_for_a_reaction_go_to_the_narrator_who_judges_and_the_code_rolls():
+    s, foe, _ = threatened()
+    eng = TurnEngine(FakeLLM([]))
+    eng, ev = run(s, [('<react attr="Ловкость" difficulty="легко" outcome="уклон" how="бросает плащ в лицо"', "/>"),
+                      ("<narrate>Плащ летит.</narrate><end", "/>")], "*срываю плащ и бросаю ему в лицо*", eng)
+    assert "[РЕАКЦИЯ]" in eng.llm.prompts[0] and "<react" in eng.llm.prompts[0]
+    line = next(l for l in rolls(ev) if l.startswith("🛡"))
+    assert "бросает плащ в лицо" in line and "обычно" in line          # a full dodge is never «легко»
+    assert not s.combat.threat and C.current(s).is_player
+
+
+def test_unjudged_free_reaction_falls_back_to_the_plain_reading():
+    s, foe, _ = threatened()
+    eng, ev = run(s, [("<narrate>Он отскакивает.</narrate><end", "/>")], "*отскакиваю за телегу*")
+    assert any(l.startswith("🛡 Ярен: уклониться") for l in rolls(ev)) and not s.combat.threat
+
+
+def test_impossible_reaction_fails():
+    s, foe, _ = threatened()
+    r = C.react_free(s, "Разум", "невозможно", "уклон", "телепортируется")
+    assert "так не выйдет" in r["text"] and s.player.hp < s.player.max_hp
+
+
+def test_free_deed_on_the_heros_turn_applies_its_effect():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Громила" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    g = ch(s, "Громила"); C.mark_foe(s, g)
+    for seed in range(40):
+        s.rng_seed = seed; s.combat.active = False; g.conditions = []; s.player.conditions = []
+        eng, ev = run(s, [('<deed attr="Ловкость" difficulty="легко" effect="оглушение" target="Громила" how="песок в глаза"', "/>"),
+                          ("<end", "/>")], "*швыряю горсть песка ему в глаза*")
+        line = next(l for l in rolls(ev) if l.startswith("✦"))
+        assert "песок в глаза" in line
+        if "успех" in line:
+            assert "оглушение" in line and any("пропускает ход" in l for l in rolls(ev))   # he loses his next turn
+            break
+    else:
+        raise AssertionError("the deed never landed")
+    assert s.combat.active and "Опиши именно это" in eng.llm.prompts[1]
+
+
+def test_deed_impossible_and_hero_turn_hint():
+    s = mk()
+    r = C.deed(s, s.player, ch(s, "Сильфа"), "Сила", "невозможно", "урон", "поднимает гору")
+    assert not r["ok"] and "так не выйдет" in r["text"]
+    M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Громила" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    C.start_combat(s, [ch(s, "Громила").id], first=s.player_id)
+    eng, ev = run(s, [("<end", "/>")], "*делаю финт и бью щитом*")
+    assert "<deed" in eng.llm.prompts[0] and "Простой удар оружием" in eng.llm.prompts[0]

@@ -5,10 +5,10 @@ from dataclasses import dataclass, field
 TAG_RE = re.compile(r"<\s*(\w+)((?:\s+[\w-]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s/>]+))*)\s*/?\s*>?\s*$", re.S)
 ATTR_RE = re.compile(r"([\w-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s/>]+))")
 ACTION_TAGS = {"speak", "roll", "change", "introduce", "leave", "end", "scale", "attack", "combat", "condition",
-               "reveal", "join", "part", "fulfill", "discover", "learn", "cast"}
+               "reveal", "join", "part", "fulfill", "discover", "learn", "cast", "deed", "react"}
 REQUIRED = {"speak": ["who"], "roll": ["skill"], "change": ["who"], "introduce": ["name"], "leave": ["who"], "end": [], "scale": ["level"], "attack": ["target"], "combat": ["action"], "condition": ["who", "name"],
             "reveal": ["who"], "join": ["who"], "part": ["who"], "fulfill": ["what"],
-            "discover": ["what"], "learn": ["what"], "cast": ["spell"]}
+            "discover": ["what"], "learn": ["what"], "cast": ["spell"], "deed": ["attr"], "react": ["attr"]}
 
 
 class ParseError(Exception):

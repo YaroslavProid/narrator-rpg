@@ -7,10 +7,15 @@ WEAPON_DEFAULTS = {  # name substring -> (damage, kind)
     "меч": ("1d8", "оружие"), "сабл": ("1d8", "оружие"), "кинжал": ("1d4", "оружие"), "нож": ("1d4", "оружие"),
     "топор": ("1d8", "оружие"), "булав": ("1d6", "оружие"), "дубин": ("1d6", "оружие"), "копь": ("1d6", "оружие"),
     "лук": ("1d8", "оружие"), "арбалет": ("1d8", "оружие"), "пистол": ("1d10", "оружие"), "кулак": ("1d3", "оружие"),
+    "тесак": ("1d8", "оружие"), "секир": ("1d10", "оружие"), "молот": ("1d8", "оружие"), "цеп": ("1d8", "оружие"),
+    "алебард": ("1d10", "оружие"), "кистен": ("1d6", "оружие"), "вил": ("1d6", "оружие"), "серп": ("1d4", "оружие"),
+    "шпаг": ("1d8", "оружие"), "рапир": ("1d8", "оружие"), "посох": ("1d6", "оружие"),
 }
 WEAPON_NAMES = {"меч": "Меч", "сабл": "Сабля", "кинжал": "Кинжал", "нож": "Нож", "топор": "Топор", "булав": "Булава",
                 "дубин": "Дубина", "копь": "Копьё", "лук": "Лук", "арбалет": "Арбалет", "пистол": "Пистолет",
-                "кулак": "Кулаки"}
+                "кулак": "Кулаки", "тесак": "Тесак", "секир": "Секира", "молот": "Молот", "цеп": "Цеп",
+                "алебард": "Алебарда", "кистен": "Кистень", "вил": "Вилы", "серп": "Серп", "шпаг": "Шпага",
+                "рапир": "Рапира", "посох": "Посох"}
 ARMOR_DEFAULTS = {"кольчуг": 4, "латы": 6, "кожан": 2, "щит": 2, "броня": 3}
 
 
@@ -522,6 +527,7 @@ REACTIONS = {   # key -> (button label, what the button sends)
     "parry": ("Парировать", "*парирую и контратакую*"),
     "take": ("Принять на броню", "*принимаю удар на броню*"),
 }
+REACTION_TEXTS = {t for _, t in REACTIONS.values()}
 REACT_WORDS = {
     "dodge": ("уклон", "увор", "отскак", "отскоч", "пригиба", "откатыва", "отпрыг", "ухожу от", "уйти от", "отступаю"),
     "block": ("блок", "щит", "закрыва", "прикрыва", "подставляю"),
@@ -639,6 +645,14 @@ def react(scene: Scene, choice: str) -> dict:
     label = REACTIONS[choice][0].lower()
     head = (f"🛡 {hero.name}: {label} — {foe.name} ({wname}), шанс {pct}%"
             + (" (враг ждёт этого приёма)" if tired else "") + " — ")
+    return _land(scene, foe, hero, choice, ok, head)
+
+
+def _land(scene: Scene, foe: Character, hero: Character, choice: str, ok: bool, head: str, how: str = "") -> dict:
+    """What the blow does after the reaction: dodge — all or nothing; block — half on success; parry — nothing and a
+    counterattack, or ×1,5 on failure; take — the armour soaks. `how` — the player's own words for a free reaction."""
+    w, skill, a = _foe_attack(foe)
+    how_free = how
     if ok:
         how = {"dodge": "удар проходит мимо", "parry": "клинок отведён — контратака!",
                "take": "удар скользит по броне", "block": None}[choice]
@@ -646,6 +660,9 @@ def react(scene: Scene, choice: str) -> dict:
             brief = {"dodge": f"{hero.name} уклоняется от удара {foe.name}",
                      "parry": f"{hero.name} парирует удар {foe.name} и контратакует",
                      "take": f"удар {foe.name} не пробивает защиту {hero.name}"}[choice]
+            if how_free:
+                brief = f"{hero.name}: {how_free} — удаётся, удар {foe.name} не достигает цели" + (
+                    ", и герой контратакует" if choice == "parry" else "")
             how = how[0].upper() + how[1:] + ("" if how.endswith("!") else ".")
             return {"text": head + f"успех! {how}", "msgs": [], "brief": brief, "counter": choice == "parry"}
     dmg, dmg_s = weapon_damage(scene, foe, w, skill)
@@ -663,6 +680,9 @@ def react(scene: Scene, choice: str) -> dict:
     else:
         verdict = "провал!"
         brief = f"{hero.name} пытается {'уклониться' if choice == 'dodge' else 'блокировать'}, но {foe.name} попадает, урон {dmg}"
+    if how_free:
+        brief = (f"{hero.name}: {how_free} — " + (f"удар {foe.name} ослаблен, урон {dmg}" if choice == "block" and ok
+                                              else f"не выходит, {foe.name} попадает, урон {dmg}"))
     dmg, soak = absorb(hero, dmg)
     old = hero.hp
     hero.hp = max(0, hero.hp - dmg)
@@ -671,6 +691,121 @@ def react(scene: Scene, choice: str) -> dict:
     if hero.hp == 0:
         brief += f", {hero.name} падает без сознания"
     return {"text": text, "msgs": msgs, "brief": brief, "counter": False}
+
+
+# ---------------- free-form deeds: the narrator judges what the player wrote, the code rolls ----------------
+DIFFICULTY = {"легко": 10, "обычно": 13, "трудно": 16, "очень трудно": 19}
+OUTCOMES = {"уклон": "avoid", "избеж": "avoid", "avoid": "avoid", "dodge": "avoid", "мимо": "avoid",
+            "смягч": "reduce", "ослаб": "reduce", "блок": "reduce", "reduce": "reduce", "block": "reduce",
+            "контр": "counter", "counter": "counter", "парир": "counter", "parry": "counter"}
+OUTCOME_KIND = {"avoid": "dodge", "reduce": "block", "counter": "parry"}
+MIN_DIFF = {"avoid": "обычно", "counter": "трудно"}     # a big payoff is never «легко»
+EFFECTS = {"урон": "урон", "damage": "урон", "оглуш": "оглушение", "stun": "оглушение", "сбит": "оглушение",
+           "ослаб": "ослабление", "weaken": "ослабление", "обезоруж": "ослабление", "ослеп": "ослабление",
+           "помех": "ослабление", "усил": "усиление", "buff": "усиление", "преимущ": "усиление", "нет": "нет",
+           "none": "нет"}
+
+
+def norm_difficulty(d: str) -> str:
+    d = (d or "").lower().strip()
+    if d.startswith(("невозм", "impossible")):
+        return "невозможно"
+    if "очень" in d or d.startswith(("very", "крайне")):
+        return "очень трудно"
+    if d.startswith(("трудн", "сложн", "hard")):
+        return "трудно"
+    if d.startswith(("легк", "лёгк", "прост", "easy")):
+        return "легко"
+    return "обычно"
+
+
+def _pick(table: dict, raw: str, default: str) -> str:
+    r = (raw or "").lower().strip()
+    return next((v for k, v in table.items() if r.startswith(k) or k in r), default)
+
+
+def harder(a: str, b: str) -> str:
+    order = list(DIFFICULTY)
+    return a if order.index(a) >= order.index(b) else b
+
+
+def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: str = "") -> dict:
+    """The player described their own reaction; the narrator judged it (attribute, difficulty, what it achieves),
+    the code rolls: attribute vs difficulty + the foe's attacking attribute over 10."""
+    cb = scene.combat
+    foe, hero = scene.characters.get(cb.threat), scene.player
+    cb.threat = ""
+    if foe is None or foe.hp <= 0 or hero.hp <= 0 or not cb.active:
+        end = check_end(scene)
+        return {"text": "Угроза миновала.", "msgs": [end] if end else [], "brief": "угроза миновала", "counter": False}
+    outcome = _pick(OUTCOMES, outcome, "avoid")
+    difficulty = norm_difficulty(difficulty)
+    how = (how or "своя реакция").strip()[:80]
+    w, skill, a = _foe_attack(foe)
+    if difficulty == "невозможно":
+        head = f"🛡 {hero.name}: {how} — так не выйдет — "
+        return _land(scene, foe, hero, OUTCOME_KIND[outcome] if outcome != "counter" else "dodge", False, head, how)
+    difficulty = harder(difficulty, MIN_DIFF.get(outcome, "легко"))
+    attr = M.resolve_check_attr(attr_raw)
+    dc = DIFFICULTY[difficulty] + (a - 10)
+    ok, pct = M.chance(scene, M.check_chance(hero.attrs.get(attr, 10), dc))
+    cb.react_last, cb.react_streak = "", 0             # an inventive answer resets the foes' read
+    head = f"🛡 {hero.name}: {how} — {attr} {hero.attrs.get(attr, 10)}, {difficulty}, против {foe.name}: шанс {pct}% — "
+    return _land(scene, foe, hero, OUTCOME_KIND[outcome], ok, head, how)
+
+
+def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str, difficulty: str, effect: str,
+         how: str = "") -> dict:
+    """A free-form deed on the actor's turn (a feint, sand in the eyes, a shield bash, kicking a brazier over...):
+    the narrator judged attribute, difficulty and effect; the code rolls the check and applies the effect.
+    Returns {ok, text, msgs, brief, damage}."""
+    difficulty = norm_difficulty(difficulty)
+    effect = _pick(EFFECTS, effect, "нет")
+    how = (how or "задуманный приём").strip()[:80]
+    if difficulty == "невозможно":
+        return {"ok": False, "text": f"✦ {actor.name}: {how} — так не выйдет.", "msgs": [], "damage": 0,
+                "brief": f"{actor.name}: {how} — не выходит, это невозможно"}
+    if effect == "урон":
+        difficulty = harder(difficulty, "обычно")          # a plain blow is <attack>; a trick that hurts is harder
+    resist = 0
+    if target is not None and target.id != actor.id and effect != "усиление":
+        resist = target.attrs.get("Воля" if M.resolve_check_attr(attr_raw) in ("Влияние", "Разум") else "Ловкость", 10) - 10
+    r = M.check(scene, actor, attr_raw, DIFFICULTY[difficulty] + resist)
+    if r.get("chance") is not None:
+        text = (f"✦ {actor.name}: {how} — {r['attr']} {r['attr_val']} против сложности {r['dc']} ({difficulty}) — "
+                f"шанс {r['chance']}% — {'успех' if r['success'] else 'провал'}.")
+    else:
+        text = f"✦ {actor.name}: {how} — " + r["text"].split(": ", 1)[-1]
+    msgs, dmg = [], 0
+    if not r["success"]:
+        return {"ok": False, "text": text, "msgs": msgs, "damage": 0, "brief": f"{actor.name}: {how} — не удаётся"}
+    tgt = target or actor
+    if effect == "урон" and target is not None:
+        w = equipped_weapon(actor)
+        skill = "Ловкость" if is_ranged(w) else "Сила"
+        if scene.rule_mode == "система":
+            dmg, dmg_s = weapon_damage(scene, actor, w, skill)
+        else:
+            dmg, dmg_s = amount(scene, w.damage if w and w.damage else "1d4")
+        dmg, soak = absorb(target, dmg)
+        old = target.hp
+        target.hp = max(0, target.hp - dmg)
+        text += f" Урон {dmg_s}{soak} → {target.name} HP {old}→{target.hp}/{target.max_hp}"
+        text, more = knockout(scene, target, text)
+        msgs += more
+        brief = f"{actor.name}: {how} — удаётся, урон {dmg}" + (f", {target.name} падает" if target.hp == 0 else "")
+    elif effect == "оглушение" and target is not None:
+        msgs.append(apply_condition(target, "оглушение", 1))
+        brief = f"{actor.name}: {how} — удаётся, {target.name} теряет ход"
+    elif effect == "ослабление" and target is not None:
+        msgs.append(apply_condition(target, "ослабление", 2, 2))
+        brief = f"{actor.name}: {how} — удаётся, {target.name} ослаблен(а) на 2 хода"
+    elif effect == "усиление":
+        msgs.append(apply_condition(actor, "усиление", 2, 2))
+        brief = f"{actor.name}: {how} — удаётся, следующие действия сильнее"
+    else:
+        brief = f"{actor.name}: {how} — удаётся"
+    return {"ok": True, "text": text, "msgs": msgs, "damage": dmg, "brief": brief}
 
 
 def find_ability(c: Character, name: str) -> Ability | None:
