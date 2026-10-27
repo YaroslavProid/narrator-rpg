@@ -171,6 +171,9 @@ class Combat(BaseModel):
     order: list[Combatant] = []
     current: int = 0
     awaiting: str = ""      # companion id whose turn waits for the hero's advice (or «пусть решает сама»)
+    threat: str = ""        # foe id whose blow at the hero waits for the player's reaction («Система»)
+    react_last: str = ""    # the hero's last reaction and how many times in a row (foes read a repeated trick)
+    react_streak: int = 0
 
 
 class Event(BaseModel):

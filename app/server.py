@@ -1,5 +1,5 @@
 """FastAPI app: REST for scenes/cards, WebSocket for turns."""
-import argparse, asyncio, json
+import argparse, asyncio, json, traceback
 from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -305,6 +305,7 @@ async def ws(websocket: WebSocket, sid: str):
             except WebSocketDisconnect:
                 raise
             except Exception as e:
+                traceback.print_exc()
                 await emit({"type": "error", "text": f"{type(e).__name__}: {e}"})
     except WebSocketDisconnect:
         return

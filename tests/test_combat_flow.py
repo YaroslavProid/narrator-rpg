@@ -47,8 +47,13 @@ def test_foes_act_by_code_and_the_turn_comes_back_to_the_hero():
     assert s.combat.active
     lines = rolls(ev)
     assert any(l.startswith("⚔️ Ярен → Разбойник") for l in lines)
-    assert any(l.startswith("⚔️ Разбойник →") for l in lines)          # the foe answered on its own turn
-    assert C.current(s).is_player                                       # and it is the hero's turn again
+    assert any(l.startswith("⚠️ Разбойник бросается на Ярен") for l in lines)   # his blow waits for a reaction
+    foe = ch(s, "Разбойник")
+    assert s.combat.threat == foe.id and C.current(s) is foe
+    eng, ev = run(s, [("<narrate>Клинок свистит.</narrate><end", "/>")], "*уклоняюсь от удара*", eng)
+    assert any(l.startswith("🛡 Ярен: уклониться") for l in rolls(ev))
+    assert not s.combat.threat and C.current(s).is_player               # and it is the hero's turn again
+    assert "[РЕАКЦИЯ ГЕРОЯ" in eng.llm.prompts[0]
 
 
 def test_out_of_turn_actions_are_refused():
@@ -161,3 +166,115 @@ def test_numbered_newcomer_is_not_mistaken_for_an_existing_one():
     eng, ev = run(s, [('<introduce name="Волк 1" desc="серый"', "/>"), ('<introduce name="Волк 2" desc="поменьше"', "/>"),
                       ("<end", "/>")], "*смотрю*")
     assert ch(s, "Волк 1") is not ch(s, "Волк 2") and ch(s, "Волк 2").name == "Волк 2"
+
+
+def threatened(seed=11):
+    s = mk(); s.rng_seed = seed
+    sil = ch(s, "Сильфа"); M.leave_party(s, sil)
+    run(s, [('<introduce name="Разбойник" side="враг" desc="с мечом"', "/>"), ("<end", "/>")], "*жду*")
+    foe = ch(s, "Разбойник"); C.start_combat(s, [foe.id], first=foe.id)
+    acts = C.run_foes(s)
+    return s, foe, acts
+
+
+def test_reaction_words_and_odds():
+    assert C.parse_reaction("*пригибаюсь и ухожу от удара*") == "dodge"
+    assert C.parse_reaction("*подставляю щит*") == "block"
+    assert C.parse_reaction("*отбиваю клинок и контратакую*") == "parry"
+    assert C.parse_reaction("«Ну давай!»") == "take"
+    s, foe, acts = threatened()
+    assert acts and "удар ещё не нанесён" in acts[-1]["text"] and s.combat.threat == foe.id
+    odds = C.reaction_odds(s)
+    # Ярен: Ловкость 14, Сила 14; a regular foe swings with Сила 11
+    assert odds["dodge"] == 65 and odds["block"] == 75 and odds["parry"] is None   # no weapon -> no parry
+    s.player.inventory.append(C.ensure_item_stats(Item(name="Меч", equipped=True)))
+    assert C.reaction_odds(s)["parry"] == 50
+    assert C.threat_info(s)["foe"] == "Разбойник"
+
+
+def test_repeating_a_trick_is_read_by_foes():
+    s, foe, _ = threatened()
+    base = C.reaction_odds(s)["dodge"]
+    C.react(s, "dodge")
+    s.combat.threat = foe.id
+    assert C.reaction_odds(s)["dodge"] == base - 10 and C.reaction_odds(s)["take"] == C.reaction_odds(s)["take"]
+    C.react(s, "block")
+    s.combat.threat = foe.id
+    assert C.reaction_odds(s)["dodge"] == base
+
+
+def test_parry_strikes_back_and_failure_opens_up():
+    s = None
+    for seed in range(60):
+        s, foe, _ = threatened(seed)
+        s.player.inventory.append(C.ensure_item_stats(Item(name="Меч", equipped=True)))
+        hp0 = s.player.hp
+        r = C.react(s, "parry")
+        if r["counter"]:
+            assert s.player.hp == hp0 and "контратака" in r["text"]
+            break
+    else:
+        raise AssertionError("no successful parry in 60 seeds")
+    for seed in range(60):
+        s, foe, _ = threatened(seed)
+        s.player.inventory.append(C.ensure_item_stats(Item(name="Меч", equipped=True)))
+        r = C.react(s, "parry")
+        if not r["counter"]:
+            assert "×1,5" in r["text"]
+            break
+
+
+def test_counterattack_and_gates_in_a_turn():
+    for seed in range(60):
+        s, foe, _ = threatened(seed)
+        s.player.inventory.append(C.ensure_item_stats(Item(name="Меч", equipped=True)))
+        eng = TurnEngine(FakeLLM([]))
+        assert "игрок выбирает реакцию" in eng.out_of_turn(s, s.player, "attack")
+        eng, ev = run(s, [("<narrate>Сталь звенит.</narrate><end", "/>")], "*парирую и контратакую*", eng)
+        if any(l.startswith("↩ Контратака") for l in rolls(ev)):
+            return
+    raise AssertionError("no counterattack in 60 seeds")
+
+
+def test_d20_and_companions_keep_the_plain_roll():
+    s = create_scene("Т", "лес", {"name": "Ярен"}, [{"name": "Бандит"}], "d20", seed=3)
+    b = ch(s, "Бандит"); C.start_combat(s, [b.id], first=b.id)
+    acts = C.run_foes(s)
+    assert acts and acts[0]["text"].startswith("⚔️ Бандит") and not s.combat.threat
+    s2 = mk(); sil = ch(s2, "Сильфа"); M.join_party(s2, sil)
+    s2.player.hp = 0                                  # only the companion can be targeted
+    run(s2, [('<introduce name="Волк" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    w = ch(s2, "Волк"); s2.combat.active = False
+    C.start_combat(s2, [w.id], first=w.id)
+    acts = C.run_foes(s2)
+    assert acts[0]["text"].startswith("⚔️ Волк → Сильфа") and not s2.combat.threat
+
+
+def test_foe_opening_blow_waits_for_reaction_and_fight_cannot_be_ended_early():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    eng, ev = run(s, [('<introduce name="Громила" count="2" side="враг" desc="с дубиной"', "/>"),
+                      ('<attack who="Громила 1" target="Ярен"', "/>"),
+                      ('<combat action="end"', "/>"), ("<end", "/>")], "*иду по тропе*")
+    g1, g2 = ch(s, "Громила 1"), ch(s, "Громила 2")
+    assert s.combat.active and s.combat.threat == g1.id and s.player.hp == s.player.max_hp
+    assert {g1.id, g2.id} <= {o.id for o in s.combat.order}
+    assert "игрок выбирает реакцию" in eng.llm.prompts[2] and "на ногах ещё" in eng.llm.prompts[3]
+
+
+def test_a_fleeing_foe_leaves_the_order_and_can_end_the_fight():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Вор" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    v = ch(s, "Вор"); C.start_combat(s, [v.id])
+    eng, ev = run(s, [('<leave who="Вор"', "/>"), ("<end", "/>")], "«Беги, пока цел!»")
+    assert not s.combat.active
+
+
+def test_a_fallen_foe_cannot_strike_or_restart_the_fight():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Громила" side="враг"', "/>"), ("<end", "/>")], "*жду*")
+    g = ch(s, "Громила"); C.mark_foe(s, g); g.hp = 0
+    eng, ev = run(s, [('<attack who="Громила" target="Ярен"', "/>"), ("<end", "/>")], "*стою*")
+    assert not s.combat.active and "без сознания" in eng.llm.prompts[1]
+    s.combat.threat = g.id; s.combat.active = True        # a stale threat from someone who fell meanwhile
+    r = C.react(s, "dodge")
+    assert r["text"] == "Угроза миновала." and not s.combat.active

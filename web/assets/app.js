@@ -775,11 +775,27 @@ const ITEM_EFFECT = { heal: 'лечение', mana: 'восстановлени�
 const POWER_WORD = { 1: ' (слабое)', 2: '', 3: ' (сильное)', 4: ' (великое)' };
 
 /* whose turn it is in a fight; on a companion's turn the input becomes advice */
+const REACT_TIP = {
+  dodge: 'Ловкость против удара: успех — мимо, провал — полный урон. Тяжёлая броня мешает.',
+  block: 'Сила против удара: успех — урон вдвое меньше. Щит помогает.',
+  parry: 'Трудно: успех — без урона и контратака, провал — урон ×1,5.',
+  take: 'Обычный шанс промаха; броня вычитается из урона. Не надоедает врагу.',
+};
 function paintTurn(state) {
   const bar = $('#turnbar'), cb = state.combat || {};
   if (!cb.active || !(cb.order || []).length) { bar.hidden = true; inp.dataset.advice = ''; paintModes(); return; }
   const cur = state.characters[(cb.order[cb.current] || {}).id] || {};
   bar.hidden = false;
+  const th = state.threat;
+  if (th) {
+    inp.dataset.advice = '';
+    paintModes();
+    bar.innerHTML = `<span><b style="color:var(--rubric-hi)">⚠ ${esc(th.foe)}</b> бросается на вас (${esc(th.weapon)}). Ваша реакция:</span>
+      <span class="reacts">${th.options.map(o => `<button class="tbtn" data-react="${esc(o.text)}" title="${esc(REACT_TIP[o.key] || '')}">${esc(o.label)} <b>${o.pct}%</b></button>`).join('')}</span>`;
+    bar.querySelectorAll('[data-react]').forEach(b => b.onclick = () => send(b.dataset.react));
+    inp.placeholder = 'Или опишите реакцию своими словами…';
+    return;
+  }
   if (cb.awaiting) {
     const c = state.characters[cb.awaiting] || {};
     bar.innerHTML = `<span><b style="color:${inkOf(c.name)}">Ход ${esc(c.name)}</b> · раунд ${cb.round}. Посоветуйте, что сделать, — или пусть решает сама.</span>

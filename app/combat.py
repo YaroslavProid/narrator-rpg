@@ -8,6 +8,9 @@ WEAPON_DEFAULTS = {  # name substring -> (damage, kind)
     "топор": ("1d8", "оружие"), "булав": ("1d6", "оружие"), "дубин": ("1d6", "оружие"), "копь": ("1d6", "оружие"),
     "лук": ("1d8", "оружие"), "арбалет": ("1d8", "оружие"), "пистол": ("1d10", "оружие"), "кулак": ("1d3", "оружие"),
 }
+WEAPON_NAMES = {"меч": "Меч", "сабл": "Сабля", "кинжал": "Кинжал", "нож": "Нож", "топор": "Топор", "булав": "Булава",
+                "дубин": "Дубина", "копь": "Копьё", "лук": "Лук", "арбалет": "Арбалет", "пистол": "Пистолет",
+                "кулак": "Кулаки"}
 ARMOR_DEFAULTS = {"кольчуг": 4, "латы": 6, "кожан": 2, "щит": 2, "броня": 3}
 
 
@@ -197,7 +200,7 @@ def apply_threat(scene: Scene, c: Character, threat: str = "обычный") -> 
     if not equipped_weapon(c):
         desc = (c.description + " " + c.kind).lower()
         named = next((k for k in WEAPON_DEFAULTS if k in desc), None)
-        w = Item(name=named.capitalize() if named else ("Клыки и когти" if beast else "Оружие"), kind="оружие",
+        w = Item(name=WEAPON_NAMES[named] if named else ("Клыки и когти" if beast else "Оружие"), kind="оружие",
                  damage=WEAPON_DEFAULTS[named][0] if named else nat, equipped=True, slot="рука")
         c.inventory.append(w)
     if arm and not any(i.kind == "броня" and i.equipped for i in c.inventory):
@@ -259,6 +262,8 @@ def foe_turn(scene: Scene, foe: Character) -> dict:
         r = cast(scene, foe, spells[0], tgt)
         how = f"применяет «{spells[0].name}» против {tgt.name}"
         hit = r.get("damage", 0) > 0
+    elif can_react(scene, tgt):                 # a blow at the hero: it waits for the player's reaction
+        return threaten(scene, foe, tgt)
     else:
         r = attack(scene, foe, tgt)
         how = f"атакует {tgt.name}"
@@ -290,6 +295,8 @@ def run_foes(scene: Scene) -> list[str]:
     (then the companion waits for the hero's advice). Returns [{text: shown to the player, brief: for the narrator}]."""
     out = []
     cb = scene.combat
+    if cb.threat:                                # a blow at the hero still waits for the reaction
+        return out
     guard = 0
     while cb.active and guard < 12:
         guard += 1
@@ -303,6 +310,8 @@ def run_foes(scene: Scene) -> list[str]:
             break
         r = foe_turn(scene, c)
         out.append({"text": r["text"] + ("\n" + "\n".join(r["msgs"]) if r["msgs"] else ""), "brief": r["brief"]})
+        if r.get("pause"):
+            break
         end = check_end(scene)
         if end:
             out.append({"text": end, "brief": "бой окончен"}); break
@@ -312,7 +321,7 @@ def run_foes(scene: Scene) -> list[str]:
 
 def start_combat(scene: Scene, ids: list[str], first: str = "") -> str:
     """`first`: whoever struck to start the fight acts first; after that the initiative order runs."""
-    ids = [i for i in ids if i in scene.characters]
+    ids = [i for i in ids if i in scene.characters and (scene.characters[i].hp > 0 or i == scene.player_id)]
     if scene.player_id not in ids:
         ids = [scene.player_id] + ids
     for cid in scene.party:                      # the whole party fights, not only who started it
@@ -420,6 +429,8 @@ def attack(scene: Scene, attacker: Character, target: Character, weapon_name: st
     """Resolve one attack. Auto-starts combat if needed. Returns result dict with text."""
     if not scene.combat.active:
         start_combat(scene, [attacker.id, target.id], first=attacker.id)
+    elif not any(o.id == target.id for o in scene.combat.order):
+        join_combat(scene, [target.id])
     w = None
     if weapon_name:
         w = next((i for i in attacker.inventory if weapon_name.lower() in i.name.lower()), None)
@@ -457,15 +468,13 @@ def attack(scene: Scene, attacker: Character, target: Character, weapon_name: st
     if not hit:
         text += "промах!" + (" (крит. провал)" if die == 1 else "")
         return {"hit": False, "text": text, "msgs": msgs, "damage": 0}
-    dmg, dmg_s = amount(scene, dmg_expr)
-    if crit:
-        dmg2, dmg_s2 = roll_dice(scene, dmg_expr)
-        dmg += dmg2; dmg_s = f"крит {dmg_s}+{dmg_s2}"
     if scene.rule_mode == "система":
-        extra = (M.passive_bonus(attacker, "ranged" if is_ranged(w) else "melee")
-                 + cond_potency(attacker, "усиление") - cond_potency(attacker, "ослабление"))
-        dmg, dmg_s = scaled(scene, dmg, attacker.attrs.get(skill, 10), extra)
+        dmg, dmg_s = weapon_damage(scene, attacker, w, skill)
     else:
+        dmg, dmg_s = amount(scene, dmg_expr)
+        if crit:
+            dmg2, dmg_s2 = roll_dice(scene, dmg_expr)
+            dmg += dmg2; dmg_s = f"крит {dmg_s}+{dmg_s2}"
         db = damage_bonus(attacker, w)
         if db:
             dmg = max(1, dmg + db); dmg_s += f"{db:+d}={dmg}"
@@ -496,6 +505,172 @@ def knockout(scene: Scene, target: Character, text: str) -> tuple[str, list[str]
         if end:
             msgs.append(end)
     return text, msgs
+
+
+def weapon_damage(scene: Scene, attacker: Character, w: Item | None, skill: str) -> tuple[int, str]:
+    """«Система»: the weapon's fixed average, multiplied by the attacking attribute; passives and buffs on top."""
+    base, _ = amount(scene, w.damage if w and w.damage else "1d4")
+    extra = (M.passive_bonus(attacker, "ranged" if is_ranged(w) else "melee")
+             + cond_potency(attacker, "усиление") - cond_potency(attacker, "ослабление"))
+    return scaled(scene, base, attacker.attrs.get(skill, 10), extra)
+
+
+# ---------------- active defence («Система»): a blow at the hero waits for the player's reaction ----------------
+REACTIONS = {   # key -> (button label, what the button sends)
+    "dodge": ("Уклониться", "*уклоняюсь от удара*"),
+    "block": ("Блок", "*блокирую удар*"),
+    "parry": ("Парировать", "*парирую и контратакую*"),
+    "take": ("Принять на броню", "*принимаю удар на броню*"),
+}
+REACT_WORDS = {
+    "dodge": ("уклон", "увор", "отскак", "отскоч", "пригиба", "откатыва", "отпрыг", "ухожу от", "уйти от", "отступаю"),
+    "block": ("блок", "щит", "закрыва", "прикрыва", "подставляю"),
+    "parry": ("парир", "контрат", "отбива", "отбить", "встречн", "отвожу"),
+    "take": ("принима", "терплю", "стою", "броню"),
+}
+REACT_TIRE = 0.10        # the same trick twice in a row: foes read it, −10 points per repeat
+
+
+def can_react(scene: Scene, tgt: Character) -> bool:
+    return (scene.rule_mode == "система" and tgt.is_player and tgt.hp > 0
+            and not any(x.name == "оглушение" for x in tgt.conditions))
+
+
+def threaten(scene: Scene, foe: Character, tgt: Character) -> dict:
+    """The foe swings at the hero; the blow lands only after the player's reaction."""
+    scene.combat.threat = foe.id
+    w = equipped_weapon(foe)
+    wname = w.name if w else "безоружный удар"
+    opts = " · ".join(f"{REACTIONS[k][0]} {p}%" for k, p in reaction_odds(scene).items() if p is not None)
+    return {"text": f"⚠️ {foe.name} бросается на {tgt.name} ({wname}) — удар ещё не нанесён. Реакция: {opts}",
+            "msgs": [], "pause": True,
+            "brief": f"{foe.name} замахивается на {tgt.name} — удар ещё не нанесён, игрок выбирает реакцию"}
+
+
+def leave_combat(scene: Scene, c: Character) -> str:
+    """Someone flees or surrenders: out of the order (the turn pointer stays on whoever had it)."""
+    cb = scene.combat
+    if not cb.active or not any(o.id == c.id for o in cb.order):
+        return ""
+    cur = cb.order[cb.current].id if cb.order and cb.current < len(cb.order) else None
+    cb.order = [o for o in cb.order if o.id != c.id]
+    if cb.threat == c.id:
+        cb.threat = ""
+    if cur == c.id:
+        cb.current -= 1          # the next step() lands on whoever stood after them
+        step(scene)
+    else:
+        cb.current = next((k for k, o in enumerate(cb.order) if o.id == cur), 0)
+    return check_end(scene)
+
+
+def parse_reaction(text: str) -> str:
+    """The first reaction named in the player's words; nothing recognisable means the blow is taken on the armour."""
+    t = (text or "").lower()
+    hits = [(t.find(w), k) for k, ws in REACT_WORDS.items() for w in ws if w in t]
+    return min(hits)[1] if hits else "take"
+
+
+def _foe_attack(foe: Character) -> tuple[Item | None, str, int]:
+    w = equipped_weapon(foe)
+    if w:
+        ensure_item_stats(w)
+    skill = "Ловкость" if is_ranged(w) else "Сила"
+    return w, skill, foe.attrs.get(skill, 10) + cond_potency(foe, "усиление") - cond_potency(foe, "ослабление")
+
+
+def reaction_odds(scene: Scene) -> dict:
+    """Success chance (percent, 5–95) of each reaction to the pending blow; None when it is impossible.
+    Уклониться: Ловкость vs the blow, heavy armour hinders, arrows are harder. Блок: Сила vs the blow, a shield helps;
+    halves the damage. Парировать: the weapon's attribute vs the blow, hard; no damage and a counterattack, but a
+    failure opens you up (×1,5). Принять на броню: the plain chance the blow misses; armour soaks the damage."""
+    cb = scene.combat
+    foe, hero = scene.characters.get(cb.threat), scene.player
+    if foe is None:
+        return {}
+    w, skill, a = _foe_attack(foe)
+    ranged = is_ranged(w)
+    arm = armor_value(hero)
+    hw = equipped_weapon(hero)
+    shield = any(i.equipped and "щит" in i.name.lower() for i in hero.inventory)
+    at = lambda k: hero.attrs.get(k, 10)
+    tire = lambda k: REACT_TIRE * cb.react_streak if cb.react_last == k and k != "take" else 0
+    raw = {
+        "dodge": 0.5 + M.CHANCE_STEP * (at("Ловкость") - a) - M.CHANCE_STEP * max(0, arm - 2) - (0.1 if ranged else 0),
+        "block": 0.6 + M.CHANCE_STEP * (at("Сила") - a) + (0.15 if shield else 0) - (0.1 if ranged and not shield else 0),
+        "parry": (None if ranged or not hw or is_ranged(hw) else
+                  0.35 + M.CHANCE_STEP * (at("Сила") - a)),
+        "take": 1 - (0.65 + M.CHANCE_STEP * (a - at("Ловкость")) - M.CHANCE_STEP * arm),
+    }
+    return {k: (None if p is None else round(100 * max(0.05, min(0.95, p - tire(k))))) for k, p in raw.items()}
+
+
+def threat_info(scene: Scene) -> dict | None:
+    """For the client: who strikes, with what, and the reactions with their chances."""
+    foe = scene.characters.get(scene.combat.threat) if scene.combat.active else None
+    if foe is None:
+        return None
+    w = equipped_weapon(foe)
+    odds = reaction_odds(scene)
+    return {"foe": foe.name, "weapon": w.name if w else "безоружный удар",
+            "options": [{"key": k, "label": REACTIONS[k][0], "text": REACTIONS[k][1], "pct": p}
+                        for k, p in odds.items() if p is not None]}
+
+
+def react(scene: Scene, choice: str) -> dict:
+    """Resolve the pending blow with the hero's reaction. Returns {text, msgs, brief, counter} — `counter` means a
+    successful parry: the hero strikes back at once (the engine resolves it, it does not take the hero's turn)."""
+    cb = scene.combat
+    foe, hero = scene.characters.get(cb.threat), scene.player
+    odds = reaction_odds(scene)
+    cb.threat = ""
+    if foe is None or foe.hp <= 0 or hero.hp <= 0 or not cb.active:
+        end = check_end(scene)
+        return {"text": "Угроза миновала.", "msgs": [end] if end else [], "brief": "угроза миновала", "counter": False}
+    if odds.get(choice) is None:
+        choice = "take"
+    pct = odds[choice]
+    tired = cb.react_last == choice != "take" and cb.react_streak > 0
+    cb.react_streak = cb.react_streak + 1 if cb.react_last == choice else 1
+    cb.react_last = choice
+    ok = M.rng(scene).random() * 100 < pct
+    w, skill, a = _foe_attack(foe)
+    wname = w.name if w else "безоружный удар"
+    label = REACTIONS[choice][0].lower()
+    head = (f"🛡 {hero.name}: {label} — {foe.name} ({wname}), шанс {pct}%"
+            + (" (враг ждёт этого приёма)" if tired else "") + " — ")
+    if ok:
+        how = {"dodge": "удар проходит мимо", "parry": "клинок отведён — контратака!",
+               "take": "удар скользит по броне", "block": None}[choice]
+        if how:
+            brief = {"dodge": f"{hero.name} уклоняется от удара {foe.name}",
+                     "parry": f"{hero.name} парирует удар {foe.name} и контратакует",
+                     "take": f"удар {foe.name} не пробивает защиту {hero.name}"}[choice]
+            how = how[0].upper() + how[1:] + ("" if how.endswith("!") else ".")
+            return {"text": head + f"успех! {how}", "msgs": [], "brief": brief, "counter": choice == "parry"}
+    dmg, dmg_s = weapon_damage(scene, foe, w, skill)
+    if choice == "block" and ok:
+        dmg = max(1, dmg // 2); dmg_s += f", блок ½={dmg}"
+        verdict, brief = "успех! Удар принят на блок.", f"{hero.name} блокирует удар {foe.name}, урон снижен до {dmg}"
+    elif choice == "parry":
+        dmg = round(dmg * 1.5); dmg_s += f", раскрылся ×1,5={dmg}"
+        verdict, brief = "провал!", f"{hero.name} пытается парировать, но раскрывается — {foe.name} попадает, урон {dmg}"
+    elif choice == "take":
+        arm = armor_value(hero)
+        if arm:
+            dmg = max(1, dmg - arm); dmg_s += f" − броня {arm}={dmg}"
+        verdict, brief = "провал!", f"{foe.name} попадает по {hero.name}, броня смягчает, урон {dmg}"
+    else:
+        verdict = "провал!"
+        brief = f"{hero.name} пытается {'уклониться' if choice == 'dodge' else 'блокировать'}, но {foe.name} попадает, урон {dmg}"
+    dmg, soak = absorb(hero, dmg)
+    old = hero.hp
+    hero.hp = max(0, hero.hp - dmg)
+    text = head + f"{verdict} Урон {dmg_s}{soak} → HP {old}→{hero.hp}/{hero.max_hp}"
+    text, msgs = knockout(scene, hero, text)
+    if hero.hp == 0:
+        brief += f", {hero.name} падает без сознания"
+    return {"text": text, "msgs": msgs, "brief": brief, "counter": False}
 
 
 def find_ability(c: Character, name: str) -> Ability | None:

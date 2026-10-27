@@ -400,6 +400,8 @@ main { position: relative; flex: 1; min-height: 0; display: flex; }
 .turnbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
   margin: 2px 0 4px; padding: 6px 10px; border: 1px solid var(--rubric); background: var(--hover); font-size: 16px; }
 .turnbar .tbtn { min-height: 34px; }
+.turnbar .reacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.turnbar .reacts b { color: var(--rubric-hi); font-weight: 600; }
 .modes-row { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 2px 0 4px; }
 .imode { min-height: 32px; padding: 2px 12px; background: none; border: 1px solid var(--ink-faint); cursor: pointer;
   font: 600 14px/1 var(--f-sc); letter-spacing: .08em; color: var(--ink-soft); border-radius: 2px; }
