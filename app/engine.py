@@ -91,6 +91,8 @@ class TurnEngine:
         self.comp_turn = {}                   # scene id -> companion whose turn this is (after the hero's advice)
         self.reacted = {}                     # scene id -> narrator step at which a free reaction was settled
         self.cur_step = {}                    # scene id -> the narrator step now running
+        self.lull_event = {}                  # scene id -> something notable happened this turn
+        self.ephemeral = {}                   # scene id -> (index in scene.turns, line): current prompt only, never stored
         self.bg_running = False
         self.bg_cancel = asyncio.Event()   # set when a player turn wants the slot
 
@@ -143,7 +145,39 @@ class TurnEngine:
         mb = MEM.memory_block(scene)
         if mb:
             pre = [{"role": "user", "content": mb}]
-        return render(scene.system_prompt, pre + scene.turns[scene.archived_upto:] + (extra or []), open_model)
+        turns = scene.turns[scene.archived_upto:]
+        eph = self.ephemeral.get(scene.id)
+        if eph and scene.archived_upto <= eph[0] < len(scene.turns):      # a one-turn reminder, not kept in the history
+            i = eph[0] - scene.archived_upto
+            turns = turns[:i] + [{**turns[i], "content": turns[i]["content"] + "\n" + eph[1]}] + turns[i + 1:]
+        return render(scene.system_prompt, pre + turns + (extra or []), open_model)
+
+    # ---------- «затишье»: a soft reminder after a run of quiet turns ----------
+    LULL_TAGS = ("introduce", "leave", "join", "part", "escape", "combat", "fulfill", "discover", "learn")
+    LULL_LINE = ("[ЗАТИШЬЕ] Несколько ходов прошло спокойно. Если это уместно сюжету и цели героя, мир может напомнить "
+                 "о себе — лучше через уже существующее: угрозу, последствия прошлых действий, знак на пути к цели. "
+                 "Если неуместно — ничего не меняй.")
+    LULL_COMBAT_LINE = ("[ЗАТИШЬЕ] Бой тянется без перемен. Если уместно, враги могут сменить тактику, подойти "
+                        "подкрепление или обстановка — вмешаться. Если нет — ничего не меняй.")
+
+    def lull_due(self, scene) -> str:
+        """The reminder line when enough quiet turns have passed (the counter resets once it fires), else ''."""
+        n = config.LULL_COMBAT_TURNS if scene.combat.active else config.LULL_TURNS
+        if n <= 0 or scene.lull < n:
+            return ""
+        scene.lull = 0
+        return self.LULL_COMBAT_LINE if scene.combat.active else self.LULL_LINE
+
+    def lull_update(self, scene, was_combat: bool, down0: int, travel: bool, fired: bool):
+        """After the turn: anything notable (new NPC, fight started/ended, a fall, an escape, travel, ...) resets the counter."""
+        if fired:
+            return
+        down1 = sum(1 for c in scene.characters.values() if c.hp <= 0)
+        if (scene.combat.active != was_combat or self.lull_event.get(scene.id) or down1 > down0
+                or (travel and not scene.combat.active)):
+            scene.lull = 0
+        else:
+            scene.lull += 1
 
     def seed(self, scene, n):
         return scene.rng_seed + scene.turn * 1000 + scene.regen * 97 + n
@@ -766,9 +800,15 @@ class TurnEngine:
         if quiet:
             turn_hint = (turn_hint + " " if turn_hint else "") + (
                 f"Давно молчат: {', '.join(quiet)}. Если кто-то из них уже ушёл по сюжету — поставь <leave who=\"Имя\"/>.")
+        lull_line = "" if (comp or react_note or free_threat or scene.combat.threat) else self.lull_due(scene)
+        was_combat = scene.combat.active
+        down0 = sum(1 for c in scene.characters.values() if c.hp <= 0)
+        self.lull_event[scene.id] = False
         scene.turns.append({"role": "user", "content": P.player_message(scene, M.state_line(scene), text,
                                                                          hint=turn_hint, memories=mem_lines,
                                                                          companion=comp)})
+        if lull_line:
+            self.ephemeral[scene.id] = (len(scene.turns) - 1, lull_line)
         steps = 0; speaks = 0
         paused0 = (scene.combat.threat, scene.combat.awaiting)
         after_pause = 0
@@ -821,10 +861,12 @@ class TurnEngine:
                 await self.next_turns(scene, emit, transcript)
             elif cur is not None and not M.in_party(scene, cur):            # the turn got stuck on a foe
                 await self.emit_foes(scene, emit, transcript, C.run_foes(scene))
+        self.ephemeral.pop(scene.id, None)
+        self.lull_update(scene, was_combat, down0, "перемещение/новое место" in budget.reasons, bool(lull_line))
         narr_words = sum(len(p["text"].split()) for p in transcript if p["kind"] == "narration")
         hot = [c for c in calls if c["kind"].startswith(("narrate", "speak", "tag"))]
         stats = {"turn": scene.turn, "tier": budget.tier, "tier_reasons": budget.reasons, "budget_speaks": budget.speaks,
-                 "steps": steps, "speaks": speaks, "narr_words": narr_words, "wall_s": round(time.time() - t0, 2),
+                 "steps": steps, "speaks": speaks, "narr_words": narr_words, "lull": scene.lull, "lull_fired": bool(lull_line), "wall_s": round(time.time() - t0, 2),
                  "prompt_tokens": prompt_tokens, "memories": len(mems), "llm_calls": calls,
                  "prompt_n": sum(c.get("prompt_n") or 0 for c in calls),
                  "cache_n": sum(c.get("cache_n") or 0 for c in calls),
@@ -898,6 +940,8 @@ class TurnEngine:
 
     async def _execute(self, scene, tag, emit, calls, transcript) -> str:
         a = tag.attrs
+        if tag.name in self.LULL_TAGS or (tag.name == "change" and any(a.get(k) not in (None, "", "0") for k in ("hp", "add", "remove"))):
+            self.lull_event[scene.id] = True                       # something happened: the lull counter restarts
         if tag.name == "speak":
             c = M.resolve_character(scene, a.get("who", ""), only_present=True) or M.resolve_character(scene, a.get("who", ""))
             if c is None:
@@ -1363,6 +1407,7 @@ class TurnEngine:
                 scene.present.append(ex.id)
             return ex
         c = new_character(scene, name, desc)
+        self.lull_event[scene.id] = True
         scene.present.append(c.id)
         c.last_active_turn = scene.turn
         store.save_card(c)

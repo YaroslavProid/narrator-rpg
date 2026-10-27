@@ -242,6 +242,7 @@ class Scene(BaseModel):
     flags: dict[str, int] = {}       # fulfilled story requirements: id -> turn
     director_note: str = ""  # one-shot hint for narrator (from Director chat)
     regen: int = 0
+    lull: int = 0                    # quiet turns in a row (the «затишье» reminder); old scenes start at 0
     version: int = 4
 
     @property

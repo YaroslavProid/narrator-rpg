@@ -35,6 +35,8 @@ REPEAT_PENALTY = _float("NARRATOR_REPEAT_PENALTY", 1.05)
 SPEAK_TOKENS = _int("NARRATOR_SPEAK_TOKENS", 400)      # ceiling for one NPC line (anti-runaway, not a target)
 CYR_MIN = _float("NARRATOR_CYR_MIN", 0.7)              # below this share of Cyrillic the step is regenerated
 LENGTH_MULT = _float("NARRATOR_LENGTH_MULT", 1.0)      # default per-scene turn length multiplier
+LULL_TURNS = _int("NARRATOR_LULL_TURNS", 5)            # quiet turns before a soft «the world may stir» reminder (0 = off)
+LULL_COMBAT_TURNS = _int("NARRATOR_LULL_COMBAT_TURNS", 4)   # the same for a fight that drags on without change (0 = off)
 INACTIVE_LEAVE = _int("NARRATOR_INACTIVE_LEAVE", 8)    # neutral NPCs auto-leave after N quiet turns (0 = off)
 
 # --- party & experience ---
