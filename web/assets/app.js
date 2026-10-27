@@ -198,10 +198,25 @@ function addNpc(name = '', desc = '') {
   return el;
 }
 $('#bAddNpc').onclick = () => addNpc().querySelector('.nn').focus();
+function saveForm() {
+  LS.set('newForm', { title: $('#nTitle').value, premise: $('#nPremise').value, name: $('#pName').value, brief: $('#pBrief').value,
+    mode: ruleMode, extra: npcExtra,
+    npcs: $$('.npc-row').map(r => [r.querySelector('.nn').value, r.querySelector('.nd').value]) });
+}
+function loadForm() {
+  const f = LS.get('newForm', null); if (!f) return false;
+  $('#nTitle').value = f.title || ''; $('#nPremise').value = f.premise || ''; $('#pName').value = f.name || ''; $('#pBrief').value = f.brief || '';
+  (f.npcs || []).forEach(([n, d]) => addNpc(n, d));
+  setExtra(f.extra || 0);
+  const mb = $(`#modes [data-mode="${f.mode || 'd20'}"]`); if (mb) mb.click();
+  return true;
+}
+$('#newForm').addEventListener('input', saveForm);
+$('#newForm').addEventListener('click', () => setTimeout(saveForm, 0));
 function showNew() {
   setView('vNew'); setTitle('Новая летопись', 'сотворение мира');
   $('#newForm').hidden = !!draft; $('#preview').hidden = !draft;
-  if (!$('#npcs').children.length) {
+  if (!$('#npcs').children.length && !loadForm()) {
     $('#nTitle').value = ''; $('#pName').value = 'Ярен';
     $('#nPremise').value = IDEAS[0][1]; $$('.idea')[0].classList.add('on');
     $('#pBrief').value = 'Бывший наёмник. Однажды не взял денег — и с тех пор за ним идут.';
@@ -251,6 +266,11 @@ function attrTable(attrs, d20) {
   }
   return `<table class="attr"><tbody>${rows}</tbody></table>`;
 }
+function worldHTML(w) {
+  if (!w || !(w.look || w.rules || (w.places || []).length)) return '';
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
+  return `<h2 class="sh">Облик мира</h2><dl class="kv" style="margin-bottom:22px">${row('облик', w.look)}${row('тон', w.tone)}${row('законы', w.rules)}${row('места', (w.places || []).join(' · '))}${row('силы', (w.factions || []).join(' · '))}</dl>`;
+}
 function renderPreview() {
   const d = draft, p = d.player || {}, d20 = d._mode === 'd20';
   const abil = (p.abilities || []).map(a => `<div class="abil"><span class="nm">${esc(a.name)}</span><span class="kd">${a.kind === 'active' ? 'активная' : 'пассивная'}${a.cost ? ' · ' + esc(a.cost) : ''}${a.cooldown ? ' · кд ' + esc(a.cooldown) : ''}</span>${a.description ? `<span class="ds">${esc(a.description)}</span>` : ''}</div>`).join('');
@@ -265,6 +285,7 @@ function renderPreview() {
           <h1 style="margin:8px 0 0;font:700 52px/1.05 var(--f-head);color:var(--rubric-hi)">${esc(d.title)}</h1>
           <span class="stamp" style="margin-top:14px">${d20 ? 'жребий · d20' : 'Система'}</span>
         </header>
+        ${worldHTML(d.world)}
         <h2 class="sh">Пролог</h2>
         ${prologueHTML(d.setting)}
         <h2 class="sh" style="margin-top:34px">Действующие лица</h2>
@@ -282,7 +303,7 @@ function renderPreview() {
         <dl class="kv">${p.description ? `<dt>облик</dt><dd>${esc(p.description)}</dd>` : ''}${p.personality ? `<dt>характер</dt><dd>${esc(p.personality)}</dd>` : ''}</dl>
         <section><h3 class="sh">Атрибуты</h3>${attrTable(p.attrs, d20)}</section>
         ${abil ? `<section><h3 class="sh">Способности</h3><div style="display:flex;flex-direction:column;gap:12px">${abil}</div></section>` : ''}
-        ${(p.inventory || []).length ? `<section><h3 class="sh">Снаряжение</h3><div class="words">${p.inventory.map(i => `<span>${esc(i)}</span>`).join('<span aria-hidden="true" style="color:var(--orn)">·</span>')}</div></section>` : ''}
+        ${(p.inventory || []).length ? `<section><h3 class="sh">Снаряжение</h3><dl class="kv kit">${p.inventory.map(i => `<dt>${esc(i)}</dt><dd>${esc((p.inventory_why || {})[i] || '')}</dd>`).join('')}</dl></section>` : ''}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:14px 26px;margin-top:10px">
           <button class="tbtn" id="bEdit">Изменить замысел</button>
           <button class="tbtn" id="bReGen">Перегенерировать</button>
@@ -302,7 +323,7 @@ async function startStory() {
   const d = draft, p = d.player || {};
   try {
     const j = await api('api/scenes', { method: 'POST', body: JSON.stringify({
-      title: d.title, setting: d.setting, rule_mode: d._mode,
+      title: d.title, setting: d.setting, rule_mode: d._mode, premise: d.premise || '', world: d.world || {},
       player: { name: p.name, description: p.description || '', personality: p.personality || '', speech: p.speech || '',
                 kind: p.kind || '', attrs: p.attrs || {}, abilities: p.abilities || [], inventory: p.inventory || [] },
       npcs: (d.npcs || []).map(n => ({ name: n.name, description: n.description || '', personality: n.personality || '', speech: n.speech || '',

@@ -42,6 +42,25 @@ PATHS_RULES = """
 лечение, щит, ману и сопротивление считает Система; не придумывай числа и не применяй способностей, которых нет в карточке."""
 
 
+def world_block(scene: Scene) -> str:
+    """The author's premise and the world's look: canon the narrator keeps to for the whole game."""
+    w = scene.world or {}
+    out = []
+    if scene.premise.strip():
+        out.append("Замысел автора (канон — не противоречь ему): " + scene.premise.strip())
+    if w.get("look"):
+        out.append("Облик мира: " + w["look"])
+    if w.get("tone"):
+        out.append("Тон: " + w["tone"])
+    if w.get("rules"):
+        out.append("Законы мира (что возможно и невозможно): " + w["rules"])
+    if w.get("places"):
+        out.append("Места: " + "; ".join(w["places"]))
+    if w.get("factions"):
+        out.append("Силы: " + "; ".join(w["factions"]))
+    return ("\n".join(out) + "\n\n") if out else ""
+
+
 def build_system(scene: Scene) -> str:
     p = scene.player
     present = [scene.characters[i] for i in scene.present if i != p.id]
@@ -109,7 +128,7 @@ def build_system(scene: Scene) -> str:
 
 # Мир
 {scene.title}
-{scene.setting.strip()}
+{world_block(scene)}{scene.setting.strip()}
 
 # Персонаж игрока
 {card_text(p)}

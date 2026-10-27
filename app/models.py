@@ -210,6 +210,8 @@ class Scene(BaseModel):
     id: str
     title: str
     setting: str = ""
+    premise: str = ""                 # the author's idea as written — canon for the whole game
+    world: dict = {}                  # look, tone, places, factions, rules (from the generation; editable later)
     rule_mode: Literal["d20", "система"] = "d20"
     player_id: str
     characters: dict[str, Character] = {}

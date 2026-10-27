@@ -401,6 +401,9 @@ main { position: relative; flex: 1; min-height: 0; display: flex; }
   margin: 2px 0 4px; padding: 6px 10px; border: 1px solid var(--rubric); background: var(--hover); font-size: 16px; }
 .turnbar .tbtn { min-height: 34px; }
 .turnbar .reacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.kv.kit { grid-template-columns: minmax(0, 38%) minmax(0, 1fr); }
+.kv.kit dt { font: 600 16px/1.45 var(--f-body); letter-spacing: 0; color: var(--ink); }
+.kv.kit dd { font-style: italic; color: var(--ink-soft); }
 .turnbar .reacts b { color: var(--rubric-hi); font-weight: 600; }
 .e-player .h .th { color: var(--ink-soft); font-style: italic; opacity: .85; }
 .e-player .h .act { color: var(--ink-soft); }

@@ -55,6 +55,24 @@ def test_normalize_abilities():
 
 
 def test_inv_filters_forbidden():
-    items = _inv(["Нож", "Легендарный меч богов", "Плащ"])
+    items, why = _inv(["Нож", "Легендарный меч богов", {"name": "Плащ", "why": "подарок матери"}])
     assert "Нож" in items and "Плащ" in items
-    assert all("легенд" not in i.lower() for i in items)
+    assert all("легенд" not in i.lower() for i in items) and why == {"Плащ": "подарок матери"}
+
+
+def test_world_and_premise_are_kept_and_reach_the_narrator():
+    from app.generate import normalize
+    from app.engine import create_scene
+    data = {"title": "Причал", "setting": "Портовый город под вечным дождём. " * 3,
+            "world": {"look": "Газовые фонари, паровые краны, деревянные доки", "tone": "нуар", "places": ["Доки", "Ратуша"],
+                      "factions": ["Гильдия"], "rules": "Магии нет, пистоли редки и дороги"},
+            "player": {"name": "Ада", "description": "сыщица", "attrs": {}, "abilities": [{"name": "Чутьё", "kind": "passive"}],
+                       "inventory": [{"name": "Револьвер, старый", "why": "служебный"}, {"name": "Ключ от двери склада", "why": "улика"}]},
+            "npcs": []}
+    d = normalize(data, "Причал", "Нуар в порту, пропала дочь судьи", "Ада")
+    assert d["premise"].startswith("Нуар в порту") and d["world"]["rules"].startswith("Магии нет")
+    assert d["player"]["inventory"] == ["Револьвер  старый".replace("  ", " "), "Ключ от двери склада"]
+    s = create_scene(d["title"], d["setting"], d["player"], [], "система", premise=d["premise"], world=d["world"])
+    assert [i.name for i in s.player.inventory] == ["Револьвер старый", "Ключ от двери склада"]   # the kit is kept as is
+    sp = s.system_prompt
+    assert "Замысел автора (канон" in sp and "Газовые фонари" in sp and "Магии нет" in sp and "Доки; Ратуша" in sp

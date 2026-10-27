@@ -95,6 +95,8 @@ class NpcIn(BaseModel):
 class SceneIn(BaseModel):
     title: str
     setting: str
+    premise: str = ""
+    world: dict = {}
     rule_mode: str = "d20"
     player: PlayerIn
     npcs: list[NpcIn] = []
@@ -155,7 +157,8 @@ async def new_scene(body: SceneIn):
         if not d["name"].strip():
             raise HTTPException(400, "у NPC нет имени")
         npcs.append(d)
-    sc = create_scene(body.title, body.setting, body.player.model_dump(), npcs, body.rule_mode, body.seed)
+    sc = create_scene(body.title, body.setting, body.player.model_dump(), npcs, body.rule_mode, body.seed,
+                      premise=body.premise, world=body.world)
     state["scenes"][sc.id] = sc
     return {"id": sc.id}
 

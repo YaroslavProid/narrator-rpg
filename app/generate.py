@@ -5,15 +5,28 @@ import json, re
 from . import mechanics as M
 from .models import ATTRS, ATTR_MIGRATE
 
+WORLD_SCHEMA = {
+    "type": "object",
+    "required": ["look", "tone", "places", "rules"],
+    "properties": {
+        "look": {"type": "string", "minLength": 40, "maxLength": 700},
+        "tone": {"type": "string", "maxLength": 200},
+        "places": {"type": "array", "minItems": 2, "maxItems": 5, "items": {"type": "string", "maxLength": 160}},
+        "factions": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 160}},
+        "rules": {"type": "string", "minLength": 20, "maxLength": 500},
+    },
+}
+
 SCENE_GEN_SCHEMA = {
     "type": "object",
-    "required": ["title", "setting", "player", "npcs"],
+    "required": ["title", "world", "setting", "player", "npcs"],
     "properties": {
         "title": {"type": "string", "minLength": 2, "maxLength": 80},
+        "world": WORLD_SCHEMA,
         "setting": {"type": "string", "minLength": 80, "maxLength": 2500},
         "player": {
             "type": "object",
-            "required": ["name", "description", "personality", "attrs", "abilities", "inventory"],
+            "required": ["name", "kind", "description", "personality", "attrs", "abilities", "inventory"],
             "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": 40},
                 "description": {"type": "string", "minLength": 20, "maxLength": 1200},
@@ -43,9 +56,16 @@ SCENE_GEN_SCHEMA = {
                 },
                 "inventory": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 2,
-                    "maxItems": 12,
+                    "minItems": 3,
+                    "maxItems": 10,
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "why"],
+                        "properties": {
+                            "name": {"type": "string", "minLength": 2, "maxLength": 40},
+                            "why": {"type": "string", "maxLength": 160},
+                        },
+                    },
                 },
             },
         },
@@ -115,11 +135,17 @@ NPC (присутствуют в стартовой сцене):
 {chr(10).join(briefs) or '(без NPC — пустой список)'}
 
 Требования:
-- setting: 2–4 абзаца лора и стартовой ситуации. Без мета-комментариев.
-- player.attrs — все из списка [{attrs}] (не D&D-скиллы).
-- player.abilities — 2–5 ИМЕНОВАННЫХ способностей: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты.
-- inventory: 4–8 предметов по роли и миру.
-- npcs: description, personality, speech, secrets, kind (вид/тип: наёмник, дух, торговец…), опционально abilities.
+- Замысел — канон. Всё, что в нём сказано (место, эпоха, тон, люди, завязка), обязательно есть в мире и ничему не противоречит; ты только дополняешь.
+- world — облик мира, по нему рассказчик будет вести всю игру:
+  look — как мир выглядит и звучит: эпоха, технологии или магия, архитектура, одежда, природа, быт;
+  tone — тон и жанр в нескольких словах; places — 2–5 мест рядом с завязкой; factions — силы и группы, которые тянут сюжет;
+  rules — что в этом мире возможно и невозможно (есть ли магия и какая, оружие, деньги, власть).
+- setting: 2–4 абзаца — лор и стартовая ситуация в этом облике мира. Без мета-комментариев.
+- player.kind — кто герой в этом мире одним-двумя словами (сыщица, наёмник, вор-карманник), по его описанию.
+- player.attrs — все из списка [{attrs}] (не D&D-скиллы), по прошлому героя.
+- player.abilities — 2–5 ИМЕНОВАННЫХ способностей: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты. Способности не нарушают world.rules (нет магии в мире — нет и заклинаний).
+- inventory: 4–8 предметов, у каждого why — откуда он у героя. Снаряжение вытекает из прошлого и рода занятий героя и из эпохи мира (никаких мечей в киберпанке и пистолетов в средневековье); оружие — то, чем герой реально умеет пользоваться; деньги — в местной валюте; 1–2 предмета прямо связаны с завязкой (письмо, долговая расписка, ключ, знак гильдии). Без легендарного.
+- npcs: description, personality, speech, secrets, kind (вид/тип: наёмник, дух, торговец…), опционально abilities. Их тайны и цели связаны с завязкой.
 - Не используй английский. Сразу готовый JSON.
 """
     system = (
@@ -173,18 +199,30 @@ def _abilities(raw) -> list[dict]:
     return out
 
 
-def _inv(raw) -> list[str]:
+def _inv(raw) -> tuple[list[str], dict[str, str]]:
+    """Item names plus why the hero has each (the reason is shown in the preview and kept for the narrator)."""
     if not isinstance(raw, list):
-        return []
-    items = []
+        return [], {}
+    items, why = [], {}
     for x in raw:
-        t = re.sub(r"\s+", " ", str(x or "").strip())[:40]
-        if not t or any(w in t.lower() for w in M.FORBIDDEN_ITEM_WORDS):
+        name = x.get("name") if isinstance(x, dict) else x
+        t = re.sub(r"\s+", " ", str(name or "").strip().replace(",", " "))[:40].strip()
+        if not t or t in items or any(w in t.lower() for w in M.FORBIDDEN_ITEM_WORDS):
             continue
         items.append(t)
+        if isinstance(x, dict) and str(x.get("why") or "").strip():
+            why[t] = str(x["why"]).strip()[:160]
         if len(items) >= 10:
             break
-    return items
+    return items, why
+
+
+def _world(raw, premise: str) -> dict:
+    w = raw if isinstance(raw, dict) else {}
+    lst = lambda v, n: [re.sub(r"\s+", " ", str(x)).strip()[:160] for x in (v if isinstance(v, list) else []) if str(x).strip()][:n]
+    return {"look": str(w.get("look") or "").strip()[:700], "tone": str(w.get("tone") or "").strip()[:200],
+            "places": lst(w.get("places"), 5), "factions": lst(w.get("factions"), 4),
+            "rules": str(w.get("rules") or "").strip()[:500]}
 
 
 def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
@@ -208,8 +246,8 @@ def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
         "kind": (pl.get("kind") or "искатель приключений").strip()[:60],
         "attrs": _clamp_attrs(pl.get("attrs") or {}),
         "abilities": abil,
-        "inventory": _inv(pl.get("inventory") or []),
     }
+    player["inventory"], player["inventory_why"] = _inv(pl.get("inventory") or [])
     if not player["inventory"]:
         player["inventory"] = ["Нож", "Кошель", "Плащ"]
     npcs = []
@@ -231,7 +269,8 @@ def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
         })
     if npc_count > 0 and len(npcs) > npc_count:
         npcs = npcs[:npc_count]
-    return {"title": title, "setting": setting, "player": player, "npcs": npcs}
+    return {"title": title, "premise": (fallback_premise or "").strip()[:1500], "world": _world(data.get("world"), fallback_premise),
+            "setting": setting, "player": player, "npcs": npcs}
 
 
 def parse_model_json(content: str) -> dict:
@@ -255,7 +294,7 @@ async def generate_scene(llm, *, title: str, premise: str, rule_mode: str,
     # raw completion via chat template for consistency with the rest of the app
     prompt = render(msgs[0]["content"], [{"role": "user", "content": msgs[1]["content"]}], open_model="")
     content, stats = await llm.complete(
-        prompt, n_predict=1800, stop=["<turn|>", "<|turn>"],
+        prompt, n_predict=3200, stop=["<turn|>", "<|turn>"],
         temperature=0.75, seed=seed, json_schema=SCENE_GEN_SCHEMA,
     )
     data = parse_model_json(content)

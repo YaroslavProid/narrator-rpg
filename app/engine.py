@@ -24,9 +24,11 @@ def new_character(scene: Scene, name: str, desc: str = "", **kw) -> Character:
     return c
 
 
-def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_mode: str, seed: int | None = None) -> Scene:
+def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_mode: str, seed: int | None = None,
+                 premise: str = "", world: dict | None = None) -> Scene:
     scene = Scene(id=store.new_scene_id(title), title=title.strip(), setting=setting.strip(), rule_mode=rule_mode,
-                  player_id="", rng_seed=seed if seed is not None else int(time.time()))
+                  player_id="", rng_seed=seed if seed is not None else int(time.time()),
+                  premise=(premise or "").strip()[:1500], world=dict(world or {}))
     scene.settings.length_mult = config.LENGTH_MULT
     pdata = {k: v for k, v in player.items() if k in ("personality", "speech")}
     p = new_character(scene, player["name"], player.get("description", ""), is_player=True, **pdata)
@@ -51,8 +53,17 @@ def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_
                 cooldown=str(ab.get("cooldown") or "")[:40],
             ))
     p.reveal.kind = p.reveal.attrs = p.reveal.abilities = True
+    from . import combat as C
+    from .models import Item
     for it in player.get("inventory") or []:
-        M.apply_delta(scene, p, {"add": it})
+        name = str(it.get("name") if isinstance(it, dict) else it).strip()[:40]
+        if not name or any(w in name.lower() for w in M.FORBIDDEN_ITEM_WORDS):
+            continue
+        ex = next((i for i in p.inventory if i.name.lower() == name.lower()), None)
+        if ex:
+            ex.qty += 1
+        else:
+            p.inventory.append(C.ensure_item_stats(Item(name=name)))
     scene.present = [p.id]
     for n in npcs:
         c = new_character(scene, n["name"], n.get("description", ""), personality=n.get("personality", ""),
