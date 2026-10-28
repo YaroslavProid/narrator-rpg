@@ -28,6 +28,7 @@ PORT = _int("NARRATOR_PORT", 8082)
 
 # --- llama-server / sampling ---
 LLM_URL = os.environ.get("LLM_URL", "http://localhost:11435")
+CHAT_TEMPLATE = os.environ.get("NARRATOR_TEMPLATE", "gemma4").strip().lower()   # app/prompt.py: gemma4 gemma3 chatml qwen3 llama3
 TEMPERATURE = _float("NARRATOR_TEMPERATURE", 0.8)
 TOP_P = _float("NARRATOR_TOP_P", 0.95)
 MIN_P = _float("NARRATOR_MIN_P", 0.05)

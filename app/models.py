@@ -16,6 +16,54 @@ ATTR_MIGRATE = {
 }
 
 
+# ---------------- the world's ruleset (app/rules.py) ----------------
+class AttrDef(BaseModel):
+    key: str                 # canonical attribute (one of ATTRS) or the world's own extra one
+    label: str = ""          # the world's name for it
+    hint: str = ""
+
+
+class ResDef(BaseModel):
+    key: str
+    label: str
+    max: int = 10
+    start: int = -1          # -1: starts full
+    hint: str = ""
+    zero: str = ""           # what happens at 0 (the narrator plays it out)
+
+
+class CondDef(BaseModel):
+    name: str
+    kind: Literal["dot", "stun", "mark"] = "mark"     # dot: hurts every round; stun: loses the turn; mark: story only
+    hint: str = ""
+
+
+class WeaponDef(BaseModel):
+    stem: str
+    name: str
+    damage: int = 8
+    ranged: bool = False
+
+
+_DEFAULT_CONDS = [("кровотечение", "dot", ""), ("горение", "dot", ""), ("яд", "dot", ""), ("отравление", "dot", ""),
+                  ("кислота", "dot", ""), ("гниение", "dot", ""), ("оглушение", "stun", ""),
+                  ("страх", "mark", "избегает риска"), ("замедление", "mark", "движется и бьёт позже"),
+                  ("ослепление", "mark", "почти не видит")]
+
+
+class Ruleset(BaseModel):
+    name: str = "фэнтези"
+    attrs: list[AttrDef] = Field(default_factory=lambda: [AttrDef(key=a, label=a) for a in ATTRS])
+    extra_attrs: list[AttrDef] = []
+    mp_label: str = "Мана"
+    resources: list[ResDef] = []
+    conditions: list[CondDef] = Field(default_factory=lambda: [CondDef(name=n, kind=k, hint=h) for n, k, h in _DEFAULT_CONDS])
+    paths: list[str] = Field(default_factory=lambda: ["core-voin", "core-mag", "core-ten", "core-duh", "core-sledopyt"])
+    weapons: list[WeaponDef] = []
+    currency: str = ""
+    notes: str = ""
+
+
 class Condition(BaseModel):
     name: str
     turns_left: int = 1
@@ -27,6 +75,7 @@ class Item(BaseModel):
     qty: int = 1
     kind: str = "предмет"
     damage: str = ""        # weapons: base damage as a number ("9"), amplified by Сила / Ловкость
+    ranged: bool = False    # a ranged weapon (aims with Ловкость)
     armor: int = 0          # armour: taken off every physical blow
     equipped: bool = False
     slot: str = ""
@@ -138,6 +187,7 @@ class Character(BaseModel):
     inspect_turn: int = -100          # last failed «осмотри»: another try only a few turns later
     paths: dict[str, int] = {}        # path id -> highest rank/tier opened
     ready_at: dict[str, int] = {}     # ability name -> the turn it can be used again (recharge)
+    res: dict[str, int] = {}          # the world's resources (Scene.rules.resources): Рассудок, Перегрев…
 
     @model_validator(mode="before")
     @classmethod
@@ -152,11 +202,10 @@ class Character(BaseModel):
                 migrated[nk] = int(v)
             except (TypeError, ValueError):
                 continue
-        # ensure all ATTRS present
+        # ensure all ATTRS present; the world's own extra attributes are kept
         data["attrs"] = {a: migrated.get(a, 10) for a in ATTRS}
         for a, v in migrated.items():
-            if a in ATTRS:
-                data["attrs"][a] = max(3, min(20, v))
+            data["attrs"][a] = max(3, min(20, v))
         if "reveal" not in data or data["reveal"] is None:
             data["reveal"] = {}
         if data.get("is_player"):
@@ -217,6 +266,7 @@ class Scene(BaseModel):
     title: str
     setting: str = ""
     premise: str = ""                 # the author's idea as written — canon for the whole game
+    rules: Ruleset = Field(default_factory=Ruleset)   # the world's ruleset (app/rules.py)
     world: dict = {}                  # look, tone, places, factions, rules (from the generation; editable later)
     rule_mode: Literal["d20", "система"] = "d20"
     player_id: str

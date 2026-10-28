@@ -21,6 +21,8 @@ def weapon_stem(name: str) -> str | None:
 def is_ranged(weapon: Item | None) -> bool:
     if not weapon:
         return False
+    if weapon.ranged:
+        return True
     k = weapon_stem(weapon.name)
     return bool(k and B.WEAPONS[k][2])
 
@@ -53,7 +55,7 @@ def classify_consumable(item: Item) -> Item:
     return item
 
 
-def ensure_item_stats(item: Item) -> Item:
+def ensure_item_stats(item: Item, scene: Scene | None = None) -> Item:
     """Weapons get a damage number, armour an armour value and a slot, consumables an effect — from the name.
     A legacy dice string («1d8») becomes a number. Things that only look like gear («ножны», «кожаная сумка») stay items."""
     if item.damage and not re.fullmatch(r"\d+", item.damage.strip()):
@@ -62,9 +64,13 @@ def ensure_item_stats(item: Item) -> Item:
         classify_consumable(item)
     if item.effect:
         return item
+    from . import rules as R
+    rw = R.weapon(scene, item.name)
+    if rw and not item.damage and not item.armor:
+        item.damage, item.kind, item.ranged = str(rw.damage), "оружие", rw.ranged
     w = weapon_stem(item.name)
     if w and not item.damage and not item.armor:
-        item.damage, item.kind = str(B.WEAPONS[w][1]), "оружие"
+        item.damage, item.kind, item.ranged = str(B.WEAPONS[w][1]), "оружие", B.WEAPONS[w][2]
     a = _stem(item.name, B.ARMOR)
     if a and not item.armor and not item.damage:
         item.armor, item.kind, item.slot = B.ARMOR[a][0], "броня", B.ARMOR[a][1]
@@ -430,11 +436,12 @@ def end_combat(scene: Scene) -> str:
 
 
 def tick_conditions(scene: Scene) -> str:
+    from . import rules as R
     msgs, fallen = [], []
     for c in scene.characters.values():
         keep = []
         for cond in c.conditions:
-            if cond.name in B.DOT and cond.potency > 0 and c.hp > 0:
+            if R.is_dot(scene, cond.name) and cond.potency > 0 and c.hp > 0:
                 old = c.hp; c.hp = max(0, c.hp - cond.potency)
                 msgs.append(f"{c.name}: {cond.name} −{cond.potency} HP ({old}→{c.hp})")
                 if c.hp == 0:
@@ -794,11 +801,12 @@ def react_free(scene: Scene, attr_raw: str, difficulty: str, outcome: str, how: 
         head = f"🛡 {hero.name}: {how} — так не выйдет — "
         return _land(scene, foe, hero, OUTCOME_KIND[outcome] if outcome != "counter" else "dodge", False, head, how)
     difficulty = harder(difficulty, MIN_DIFF.get(outcome, "легко"))
-    attr = M.resolve_check_attr(attr_raw)
+    attr = M.resolve_check_attr(attr_raw, scene)
     dc = DIFFICULTY[difficulty] + (a - 10)
     ok, pct = M.chance(scene, B.check_chance(hero.attrs.get(attr, 10), dc))
     cb.react_last, cb.react_streak = "", 0             # an inventive answer resets the foes' read
-    head = f"🛡 {hero.name}: {how} — {attr} {hero.attrs.get(attr, 10)}, {difficulty}, против {foe.name}: шанс {pct}% — "
+    from . import rules as R
+    head = f"🛡 {hero.name}: {how} — {R.label(scene, attr)} {hero.attrs.get(attr, 10)}, {difficulty}, против {foe.name}: шанс {pct}% — "
     return _land(scene, foe, hero, OUTCOME_KIND[outcome], ok, head, how)
 
 
@@ -864,7 +872,7 @@ def deed(scene: Scene, actor: Character, target: Character | None, attr_raw: str
         difficulty = harder(difficulty, "обычно")          # a plain blow is <attack>; a trick that hurts is harder
     resist = 0
     if target is not None and target.id != actor.id and effect != "усиление":
-        resist = target.attrs.get("Воля" if M.resolve_check_attr(attr_raw) in ("Влияние", "Разум") else "Ловкость", 10) - 10
+        resist = target.attrs.get("Воля" if M.resolve_check_attr(attr_raw, scene) in ("Влияние", "Разум") else "Ловкость", 10) - 10
     r = M.check(scene, actor, attr_raw, DIFFICULTY[difficulty] + resist)
     text = f"✦ {actor.name}: {how} — " + r["text"].split(": ", 1)[-1]
     msgs, dmg = [], 0
@@ -969,10 +977,14 @@ def cast(scene: Scene, caster: Character, a: Ability, target: Character | None,
     return {"ok": True, "text": text, "msgs": msgs, "damage": dmg}
 
 
-def _rider(a: Ability, t: Character, v: int) -> str:
+def _rider(scene: Scene, a: Ability, t: Character, v: int) -> str:
+    from . import rules as R
     if not a.rider or t.hp <= 0:
         return ""
-    pot = max(1, v // 5) if a.rider in B.DOT else 0
+    if R.cond_kind(scene, a.rider) == "stun":
+        apply_condition(t, "оглушение", turns=a.rider_turns or 1)
+        return f", оглушение ({a.rider_turns or 1} р.)"
+    pot = max(1, v // 5) if R.is_dot(scene, a.rider) else 0
     apply_condition(t, a.rider, turns=a.rider_turns or 2, potency=pot)
     return f", {a.rider} ({a.rider_turns or 2} р." + (f", −{pot} HP за раунд" if pot else "") + ")"
 
@@ -987,7 +999,7 @@ def _apply(scene: Scene, caster: Character, a: Ability, eff: str, target: Charac
         if phys:
             v += cond_potency(caster, "усиление") - cond_potency(caster, "ослабление")
         d, land = hurt(scene, target, max(1, v), phys)
-        text, more = knockout(scene, target, f"{who}{s}{land}" + _rider(a, target, v))
+        text, more = knockout(scene, target, f"{who}{s}{land}" + _rider(scene, a, target, v))
         return text, d, more
     if eff == "heal":
         v, s = magical(scene, caster, a, "heal")
@@ -1009,12 +1021,12 @@ def _apply(scene: Scene, caster: Character, a: Ability, eff: str, target: Charac
             v, _ = magical(scene, caster, a, "", levelled=False)
             apply_condition(target, "ослабление", turns=2, potency=v)
             return (f"{who}{roll_s} — ослабление −{v} к урону и −{round(B.BUFF_HIT * 100)}% к попаданию (2 раунда)"
-                    + _rider(a, target, v)), 0, []
+                    + _rider(scene, a, target, v)), 0, []
         turns = max(1, B.to_number(a.power) or 1)
         apply_condition(target, "оглушение", turns=turns)
-        return f"{who}{roll_s} — {target.name} оглушён ({turns} раунд.)" + _rider(a, target, 0), 0, []
+        return f"{who}{roll_s} — {target.name} оглушён ({turns} раунд.)" + _rider(scene, a, target, 0), 0, []
     n = B.to_number(a.power)
-    return (f"{who}эффект описывает рассказчик" + (f" (сила {n})" if n else "") + _rider(a, target, n)), 0, []
+    return (f"{who}эффект описывает рассказчик" + (f" (сила {n})" if n else "") + _rider(scene, a, target, n)), 0, []
 
 
 def combat_status(scene: Scene) -> str:

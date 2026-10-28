@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from . import balance as B, combat as C, config, magic as G, mechanics as M
 from .models import ATTRS, Scene
-from .prompt import render
+from .prompt import render, stops
 
 KNOWLEDGE = f"""Ты — Система: безличный интерфейс мира в духе LitRPG. Говоришь кратко, сухо, по делу, обращаешься к игроку на «вы». Отвечаешь по-русски.
 
@@ -115,7 +115,7 @@ async def ask(llm, scene: Scene, question: str, seed: int = -1) -> dict:
     G.ensure_core(scene)
     user = context(scene) + f"\n\n# Вопрос игрока\n{question.strip()}"
     content, st = await llm.complete(render(KNOWLEDGE, [{"role": "user", "content": user}], open_model=""), 700,
-                                     stop=["<turn|>", "<|turn>"], temperature=0.3, seed=seed, json_schema=SCHEMA)
+                                     stop=stops(), temperature=0.3, seed=seed, json_schema=SCHEMA)
     st["kind"] = "system agent"; calls.append(st)
     try:
         data = json.loads(content)

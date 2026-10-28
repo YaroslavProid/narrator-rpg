@@ -6,7 +6,7 @@
   --paper: #1f1a15; --paper-2: #171310;
   --ink: #e6d9be; --ink-soft: #bcae91; --ink-faint: rgba(230, 217, 190, .2); --hover: rgba(230, 217, 190, .07);
   --rubric: #e58a6c; --rubric-hi: #ee9b7e; --orn: #9c844f; --gold-ink: #d8b468;
-  --hp: #d46a52; --mp: #7fa6d8; --xp: #d0ac5c;
+  --hp: #d46a52; --mp: #7fa6d8; --xp: #d0ac5c; --res: #a98bd4;
   --burn: rgba(0, 0, 0, .7); --burn-2: rgba(0, 0, 0, .6); --stain: rgba(0, 0, 0, .35); --spine: rgba(0, 0, 0, .6);
   --edge-a: #3b332a; --edge-b: #1e1914;
   --fs: 20px; --lh: 1.66;
@@ -434,6 +434,7 @@ body.busy .send .wax { animation: spin 5s linear infinite; }
 .pane.on { display: flex; }
 .bar { position: relative; height: 12px; border: 1.5px solid var(--ink); border-radius: 2px 4px 3px 5px/4px 2px 5px 3px; overflow: hidden; }
 .bar > span { display: block; height: 100%; background-image: repeating-linear-gradient(-55deg, rgba(0, 0, 0, .2) 0 2px, transparent 2px 5px); transition: width .7s ease; }
+.bar.res > span { background-color: var(--res); }
 .bar.hp > span { background-color: var(--hp); } .bar.mp > span { background-color: var(--mp); } .bar.xp > span { background-color: var(--xp); }
 .bar.thin { height: 8px; }
 .gauge .row { display: flex; justify-content: space-between; font-size: 16px; margin-bottom: 4px; }

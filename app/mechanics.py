@@ -110,9 +110,11 @@ def resolve_skill(name: str) -> str | None:
     return pool[m[0]] if m else None
 
 
-def resolve_check_attr(raw: str) -> str:
-    """What attribute a <roll skill=...> or check uses (attrs first, then legacy skills)."""
-    a = resolve_attr(raw)
+def resolve_check_attr(raw: str, scene: Scene | None = None) -> str:
+    """What attribute a <roll skill=...> or check uses: the world's names first, then the canonical ones, then legacy
+    skills."""
+    from . import rules as R
+    a = R.resolve(scene, raw) or resolve_attr(raw)
     if a:
         return a
     sk = resolve_skill(raw)
@@ -205,12 +207,14 @@ def chance(scene: Scene, p: float) -> tuple[bool, int]:
 def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
     """Attribute check. «Система»: 50% when the attribute equals the difficulty, ±5% per point of difference.
     d20: d20 + soft_weight(attr, 10) vs DC (small gaps barely matter, large ones dominate)."""
-    attr = resolve_check_attr(skill_raw)
+    attr = resolve_check_attr(skill_raw, scene)
     try:
         dc = int(re.sub(r"[^\d-]", "", str(dc_raw)) or 12)
     except ValueError:
         dc = 12
     dc = max(5, min(30, dc))
+    from . import rules as R
+    lab = R.label(scene, attr)
     aval = who.attrs.get(attr, 10)
     w = soft_weight(aval, 10)
     res = {"who": who.name, "skill": attr, "attr": attr, "mod": w, "dc": dc,
@@ -221,13 +225,13 @@ def check(scene: Scene, who: Character, skill_raw: str, dc_raw) -> dict:
         ok = d == 20 or (d != 1 and total >= dc)
         res.update(die=d, total=total, success=ok, crit=d == 20, fumble=d == 1)
         tag = " (критический успех!)" if d == 20 else " (критический провал!)" if d == 1 else ""
-        res["text"] = (f"Проверка «{attr}» ({who.name}): 1d20({d}) {w:+d} = {total} "
-                       f"против {dc} — {'успех' if ok else 'провал'}{tag} [{res['soft']}, {attr} {aval}].")
+        res["text"] = (f"Проверка «{lab}» ({who.name}): 1d20({d}) {w:+d} = {total} "
+                       f"против {dc} — {'успех' if ok else 'провал'}{tag} [{res['soft']}, {lab} {aval}].")
     else:
         # «Система»: no die shown — the attribute against the difficulty gives a chance
         ok, pct = chance(scene, B.check_chance(aval, dc))
         res.update(die=None, total=aval, success=ok, crit=False, fumble=False, chance=pct)
-        res["text"] = (f"Проверка «{attr}» ({who.name}): {attr} {aval} против сложности {dc} — шанс {pct}% — "
+        res["text"] = (f"Проверка «{lab}» ({who.name}): {lab} {aval} против сложности {dc} — шанс {pct}% — "
                        f"{'успех' if ok else 'провал'}.")
     return res
 
@@ -406,7 +410,7 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
         if ex: ex.qty += 1
         else:
             from . import combat as C
-            c.inventory.append(C.ensure_item_stats(Item(name=a)))
+            c.inventory.append(C.ensure_item_stats(Item(name=a), scene))
         msgs.append(f"{c.name}: получен предмет «{a}»")
     if len(adds) > LIMITS["items_per_event"]:
         rej.append("лишние предметы отклонены")
@@ -851,10 +855,12 @@ def run_system_command(scene: Scene, cmd: str, rest: str) -> str:
             f"- {x.name}: ещё {x.turns_left} ход." + (f", сила {x.potency}" if x.potency else "") for x in p.conditions)
     if cmd == "assign":
         m = re.search(r"([а-яёa-z]+)\s*\+?\s*(\d+)?", re.sub(r"распредел\w*|очк\w*|вложи|assign", "", rest))
-        attr = resolve_attr(m.group(1)) if m else None
+        from . import rules as R
+        attr = (R.resolve(scene, m.group(1)) or resolve_attr(m.group(1))) if m else None
         n = int(m.group(2) or 1) if m else 1
         if not attr:
-            return "⟦ СИСТЕМА ⟧ Укажите атрибут: " + ", ".join(ATTRS)
+            return "⟦ СИСТЕМА ⟧ Укажите атрибут: " + ", ".join(R.attr_labels(scene))
+        p.attrs.setdefault(attr, 10)
         if n > p.attr_points:
             return f"⟦ СИСТЕМА ⟧ Недостаточно очков у {p.name}: есть {p.attr_points}."
         p.attr_points -= n; p.attrs[attr] += n
@@ -887,6 +893,8 @@ def state_line(scene: Scene) -> str:
     acts = [f"{c.name}: " + ", ".join(a.name for a in c.abilities if a.kind == "active")
             for c in [p] + party if any(a.kind == "active" for a in c.abilities)]
     skills = (" Активные способности — " + "; ".join(acts) + ".") if acts else ""
-    return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, MP {p.mp}/{p.max_mp}, "
+    res = "".join(f", {r.label} {p.res.get(r.key, r.max)}/{r.max}" for r in scene.rules.resources)
+    return (f"[СОСТОЯНИЕ] Ход {scene.turn}. {p.name}: ур. {p.level}, HP {p.hp}/{p.max_hp}, "
+            f"{scene.rules.mp_label} {p.mp}/{p.max_mp}{res}, "
             f"EXP {p.exp}/{p.exp_next}, броня {C.armor_value(p)}. Инвентарь: {inv}. Состояния: {cond}.{combat}{skills} "
             f"В сцене: {', '.join(present) or 'никого'}.")

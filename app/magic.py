@@ -13,7 +13,7 @@ from __future__ import annotations
 import difflib, json, re
 from . import balance as B, mechanics as M, store
 from .models import ATTRS, Ability, Character, Lead, MagicPath, PathReq, PathTier, Scene
-from .prompt import render
+from .prompt import render, stops
 
 ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}
 
@@ -172,8 +172,15 @@ def ensure_core(scene: Scene) -> bool:
         for c in scene.characters.values():
             c.paths = {k: v for k, v in c.paths.items() if k not in ids}
         changed = True
+    from . import rules as R
+    off = [p for p in scene.paths if p.core and not R.path_on(scene, p.id)
+           and not any(p.id in c.paths for c in scene.characters.values())]       # a world without it; nobody learned it
+    if off:
+        ids = {p.id for p in off}
+        scene.paths = [p for p in scene.paths if p.id not in ids]
+        changed = True
     have = {p.id for p in scene.paths}
-    missing = [p for p in build_core() if p.id not in have]
+    missing = [p for p in build_core() if p.id not in have and R.path_on(scene, p.id)]
     if missing:
         scene.paths = missing + scene.paths
         changed = True
@@ -264,7 +271,7 @@ def apply_flavor(scene: Scene, data: dict) -> int:
 
 async def flavor_core(llm, scene: Scene, seed: int = -1) -> dict:
     content, st = await llm.complete(render(FLAVOR_SYS, [{"role": "user", "content": flavor_request(scene)}], open_model=""),
-                                     2200, stop=["<turn|>", "<|turn>"], temperature=0.6, seed=seed, json_schema=FLAVOR_SCHEMA)
+                                     2200, stop=stops(), temperature=0.6, seed=seed, json_schema=FLAVOR_SCHEMA)
     try:
         data = json.loads(content)
     except ValueError:
@@ -508,7 +515,7 @@ async def generate_branch(llm, scene: Scene, lead_id: str, seed: int = -1) -> tu
     if not lead or lead.branch:
         return "", None
     content, st = await llm.complete(render(BRANCH_SYS, [{"role": "user", "content": branch_request(scene, lead)}], open_model=""),
-                                     1800, stop=["<turn|>", "<|turn>"], temperature=0.7, seed=seed,
+                                     1800, stop=stops(), temperature=0.7, seed=seed,
                                      json_schema=branch_schema(scene))
     st = st | {"kind": "branch"}
     try:

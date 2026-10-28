@@ -34,12 +34,41 @@ WORLD_SCHEMA = {
     },
 }
 
+_S = lambda n: {"type": "string", "maxLength": n}
+RULES_SCHEMA = {
+    "type": "object",
+    "required": ["name", "paths", "mp_label", "attr_labels", "extra_attrs", "resources", "conditions", "weapons", "currency"],
+    "properties": {
+        "name": _S(40),
+        "paths": {"type": "array", "minItems": 2, "maxItems": 5,
+                  "items": {"type": "string", "enum": ["core-voin", "core-mag", "core-ten", "core-duh", "core-sledopyt"]}},
+        "mp_label": _S(20),
+        "attr_labels": {"type": "object", "properties": {a: _S(24) for a in ATTRS}},
+        "extra_attrs": {"type": "array", "maxItems": 2, "items": {
+            "type": "object", "required": ["label", "hint"], "properties": {"label": _S(24), "hint": _S(80)}}},
+        "resources": {"type": "array", "maxItems": 2, "items": {
+            "type": "object", "required": ["label", "max", "hint", "zero"],
+            "properties": {"label": _S(24), "max": {"type": "integer", "minimum": 3, "maximum": 100},
+                           "hint": _S(100), "zero": _S(120)}}},
+        "conditions": {"type": "array", "maxItems": 4, "items": {
+            "type": "object", "required": ["name", "kind", "hint"],
+            "properties": {"name": _S(24), "kind": {"type": "string", "enum": ["dot", "stun", "mark"]}, "hint": _S(100)}}},
+        "weapons": {"type": "array", "maxItems": 4, "items": {
+            "type": "object", "required": ["name", "damage", "ranged"],
+            "properties": {"name": _S(30), "damage": {"type": "integer", "minimum": 3, "maximum": 20},
+                           "ranged": {"type": "boolean"}}}},
+        "currency": _S(60),
+        "notes": _S(400),
+    },
+}
+
 SCENE_GEN_SCHEMA = {
     "type": "object",
-    "required": ["title", "world", "setting", "player", "npcs"],
+    "required": ["title", "world", "rules", "setting", "player", "npcs"],
     "properties": {
         "title": {"type": "string", "minLength": 2, "maxLength": 80},
         "world": WORLD_SCHEMA,
+        "rules": RULES_SCHEMA,
         "setting": {"type": "string", "minLength": 80, "maxLength": 2500},
         "player": {
             "type": "object",
@@ -146,6 +175,19 @@ NPC (присутствуют в стартовой сцене):
   look — как мир выглядит и звучит: эпоха, технологии или магия, архитектура, одежда, природа, быт;
   tone — тон и жанр в нескольких словах; places — 2–5 мест рядом с завязкой; factions — силы и группы, которые тянут сюжет;
   rules — что в этом мире возможно и невозможно (есть ли магия и какая, оружие, деньги, власть).
+- rules — правила игры для этого мира (движок у всех миров общий, ты настраиваешь его под мир):
+  paths — какие основные пути развития здесь существуют: core-voin (бой и оружие), core-mag (учёная магия),
+  core-ten (скрытность, яды, обман), core-duh (вера, дух, исцеление), core-sledopyt (выживание, стрельба, звери).
+  Нет магии — нет core-mag; нет веры с силой — нет core-duh. Оставь 2–5;
+  mp_label — как в этом мире зовётся запас сил для особых приёмов (Мана, Ки, Энергия, Выдержка, Заряд);
+  attr_labels — можно переименовать шесть атрибутов под мир (Разум → Смекалка, Влияние → Обаяние), не меняя их роли;
+  пустые — оставь как есть; extra_attrs — 0–2 своих атрибута мира для проверок (Механика, Хакинг, Вера);
+  resources — 0–2 ресурса героя, которых нет в обычной игре и которые важны для жанра (Рассудок в хорроре, Перегрев
+  импланта в киберпанке, Голод в выживании): max, на что влияет (hint) и что случится на нуле (zero);
+  conditions — 0–4 состояния мира (горение, заражение, паника…): kind dot — ранит каждый раунд, stun — теряет ход,
+  mark — только для сюжета; weapons — 0–4 оружия этого мира, которого нет в обычном фэнтези (револьвер, плазменный
+  резак), с уроном 3–20 (нож 5, меч 9, револьвер 12, винтовка 15) и ranged; currency — местные деньги;
+  notes — особые правила одной-двумя фразами, если есть.
 - setting: 2–4 абзаца — лор и стартовая ситуация в этом облике мира. Без мета-комментариев.
 - player.kind — кто герой в этом мире одним-двумя словами (сыщица, наёмник, вор-карманник), по его описанию.
 - player.attrs — все из списка [{attrs}] (не D&D-скиллы), по прошлому героя.
@@ -276,8 +318,9 @@ def normalize(data: dict, fallback_title: str = "", fallback_premise: str = "",
         })
     if npc_count > 0 and len(npcs) > npc_count:
         npcs = npcs[:npc_count]
+    from . import rules as R
     return {"title": title, "premise": (fallback_premise or "").strip()[:1500], "world": _world(data.get("world"), fallback_premise),
-            "setting": setting, "player": player, "npcs": npcs}
+            "rules": R.from_ai(data.get("rules")).model_dump(), "setting": setting, "player": player, "npcs": npcs}
 
 
 def parse_model_json(content: str) -> dict:
@@ -296,12 +339,12 @@ async def generate_scene(llm, *, title: str, premise: str, rule_mode: str,
                          npc_briefs: list[dict], npc_count: int = 0,
                          seed: int = -1) -> dict:
     """Call llama-server once and return a normalized scene draft."""
-    from .prompt import render
+    from .prompt import render, stops
     msgs = build_prompt(title, premise, rule_mode, player_name, player_brief, npc_briefs, npc_count)
     # raw completion via chat template for consistency with the rest of the app
     prompt = render(msgs[0]["content"], [{"role": "user", "content": msgs[1]["content"]}], open_model="")
     content, stats = await llm.complete(
-        prompt, n_predict=3200, stop=["<turn|>", "<|turn>"],
+        prompt, n_predict=3200, stop=stops(),
         temperature=0.75, seed=seed, json_schema=SCENE_GEN_SCHEMA,
     )
     data = parse_model_json(content)

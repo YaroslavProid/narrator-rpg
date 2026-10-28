@@ -8,7 +8,7 @@ import json, re
 from . import mechanics as M
 from . import prompts as P
 from .models import ATTRS, Ability, Character, Item, Scene
-from .prompt import render
+from .prompt import render, stops
 
 from .generate import ABILITY_PROPS
 
@@ -369,7 +369,7 @@ async def run_director(llm, scene: Scene, order: str, *, audit: bool = False, se
     msgs = build_director_prompt(scene, order, audit=audit)
     prompt = render(msgs[0]["content"], [{"role": "user", "content": msgs[1]["content"]}], open_model="")
     content, stats = await llm.complete(
-        prompt, n_predict=1600, stop=["<turn|>", "<|turn>"],
+        prompt, n_predict=1600, stop=stops(),
         temperature=0.55, seed=seed, json_schema=DIRECTOR_SCHEMA,
     )
     data = parse_director_json(content)

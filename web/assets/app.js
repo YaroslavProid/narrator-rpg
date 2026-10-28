@@ -258,11 +258,21 @@ function prologueHTML(text) {
     ? `<p class="narr ni">${dropcapHTML(p[0])}<span class="sr">${esc(p[0])}</span>${esc(p.slice(1))}</p>`
     : `<p class="narr">${esc(p)}</p>`).join('');
 }
-function attrTable(attrs, d20) {
-  const e = Object.entries(attrs || {}); if (!e.length) return '';
+/* the world's ruleset (state.rules / draft.rules): attribute names and order, mana's name, resources, conditions */
+function attrDefs(rules) {
+  const r = rules || (st && st.rules) || {};
+  return [...(r.attrs || []), ...(r.extra_attrs || [])];
+}
+function attrLabel(k, rules) { const d = attrDefs(rules).find(a => a.key === k); return (d && d.label) || k; }
+function attrTable(attrs, d20, rules) {
+  const defs = attrDefs(rules), seen = new Set(defs.map(d => d.key));
+  const e = [...defs.filter(d => d.key in (attrs || {})).map(d => [d.key, attrs[d.key]]),
+             ...Object.entries(attrs || {}).filter(([k]) => !seen.has(k))];
+  if (!e.length) return '';
   let rows = '';
   for (let i = 0; i < e.length; i += 2) {
-    const c = ([k, v]) => `<td>${esc(k)}</td><td class="v">${v}</td><td class="m" title="${d20 ? 'модификатор' : 'усиление того, что опирается на атрибут'}">${d20 ? mod(v) : mult(v)}</td>`;
+    const hintOf = k => (defs.find(d => d.key === k) || {}).hint || '';
+    const c = ([k, v]) => `<td title="${esc(hintOf(k))}">${esc(attrLabel(k, rules))}</td><td class="v">${v}</td><td class="m" title="${d20 ? 'модификатор' : 'усиление того, что опирается на атрибут'}">${d20 ? mod(v) : mult(v)}</td>`;
     rows += `<tr>${c(e[i])}<td style="width:16px"></td>${e[i + 1] ? c(e[i + 1]) : '<td></td><td></td><td></td>'}</tr>`;
   }
   return `<table class="attr"><tbody>${rows}</tbody></table>`;
@@ -271,6 +281,18 @@ function worldHTML(w) {
   if (!w || !(w.look || w.rules || (w.places || []).length)) return '';
   const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
   return `<h2 class="sh">Облик мира</h2><dl class="kv" style="margin-bottom:22px">${row('облик', w.look)}${row('тон', w.tone)}${row('законы', w.rules)}${row('места', (w.places || []).join(' · '))}${row('силы', (w.factions || []).join(' · '))}</dl>`;
+}
+const PATH_RU = { 'core-voin': 'Воин', 'core-mag': 'Маг', 'core-ten': 'Тень', 'core-duh': 'Дух', 'core-sledopyt': 'Следопыт' };
+function rulesHTML(r) {
+  if (!r) return '';
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
+  const renamed = (r.attrs || []).filter(a => a.label && a.label !== a.key).map(a => `${a.key} → ${a.label}`).join(', ');
+  return `<h2 class="sh">Правила мира</h2><dl class="kv" style="margin-bottom:22px">
+    ${row('пути', (r.paths || []).map(p => PATH_RU[p] || p).join(' · '))}${row('сила приёмов', r.mp_label)}
+    ${row('атрибуты', [renamed, ...(r.extra_attrs || []).map(a => '+ ' + a.label)].filter(Boolean).join('; '))}
+    ${row('ресурсы', (r.resources || []).map(x => `${x.label} (0–${x.max})${x.zero ? ': на нуле — ' + x.zero : ''}`).join('; '))}
+    ${row('оружие', (r.weapons || []).map(w => `${w.name} — урон ${w.damage}`).join('; '))}
+    ${row('деньги', r.currency)}${row('особое', r.notes)}</dl>`;
 }
 function renderPreview() {
   const d = draft, p = d.player || {}, d20 = d._mode === 'd20';
@@ -286,7 +308,7 @@ function renderPreview() {
           <h1 style="margin:8px 0 0;font:700 52px/1.05 var(--f-head);color:var(--rubric-hi)">${esc(d.title)}</h1>
           <span class="stamp" style="margin-top:14px">${d20 ? 'жребий · d20' : 'Система'}</span>
         </header>
-        ${worldHTML(d.world)}
+        ${worldHTML(d.world)}${rulesHTML(d.rules)}
         <h2 class="sh">Пролог</h2>
         ${prologueHTML(d.setting)}
         <h2 class="sh" style="margin-top:34px">Действующие лица</h2>
@@ -302,7 +324,7 @@ function renderPreview() {
             <p style="margin:2px 0 0;font-size:18px;font-style:italic;color:var(--ink-soft)">${esc([p.kind, 'уровень 1'].filter(Boolean).join(' · '))}</p></div>
         </div>
         <dl class="kv">${p.description ? `<dt>облик</dt><dd>${esc(p.description)}</dd>` : ''}${p.personality ? `<dt>характер</dt><dd>${esc(p.personality)}</dd>` : ''}</dl>
-        <section><h3 class="sh">Атрибуты</h3>${attrTable(p.attrs, d20)}</section>
+        <section><h3 class="sh">Атрибуты</h3>${attrTable(p.attrs, d20, d.rules)}</section>
         ${abil ? `<section><h3 class="sh">Способности</h3><div style="display:flex;flex-direction:column;gap:12px">${abil}</div></section>` : ''}
         ${(p.inventory || []).length ? `<section><h3 class="sh">Снаряжение</h3><dl class="kv kit">${p.inventory.map(i => `<dt>${esc(i)}</dt><dd>${esc((p.inventory_why || {})[i] || '')}</dd>`).join('')}</dl></section>` : ''}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:14px 26px;margin-top:10px">
@@ -324,7 +346,7 @@ async function startStory() {
   const d = draft, p = d.player || {};
   try {
     const j = await api('api/scenes', { method: 'POST', body: JSON.stringify({
-      title: d.title, setting: d.setting, rule_mode: d._mode, premise: d.premise || '', world: d.world || {},
+      title: d.title, setting: d.setting, rule_mode: d._mode, premise: d.premise || '', world: d.world || {}, rules: d.rules || {},
       player: { name: p.name, description: p.description || '', personality: p.personality || '', speech: p.speech || '',
                 kind: p.kind || '', attrs: p.attrs || {}, abilities: p.abilities || [], inventory: p.inventory || [] },
       npcs: (d.npcs || []).map(n => ({ name: n.name, description: n.description || '', personality: n.personality || '', speech: n.speech || '',
@@ -672,7 +694,7 @@ $('#bSheetClose').onclick = closeSheet; $('#backdrop').onclick = closeSheet; $('
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet(); toggleMenu(false); } });
 selectTab(LS.get('tab', 'hero'));
 
-const gauge = (label, c, m, cls) => `<div class="gauge"><div class="row"><span>${label}</span><b>${c ?? '?'} / ${m ?? '?'}</b></div><div class="bar ${cls}"><span style="width:${pct(c, m)}%"></span></div></div>`;
+const gauge = (label, c, m, cls, hint = '') => `<div class="gauge"${hint ? ` title="${esc(hint)}"` : ''}><div class="row"><span>${esc(label)}</span><b>${c ?? '?'} / ${m ?? '?'}</b></div><div class="bar ${cls}"><span style="width:${pct(c, m)}%"></span></div></div>`;
 const COND_ICON = {
   'кровотечение': '<svg aria-hidden="true" width="14" height="18" viewBox="0 0 14 18"><path d="M7 1 C 10 6, 13 9, 13 12 A 6 6 0 0 1 1 12 C 1 9, 4 6, 7 1 Z" fill="none" stroke="var(--rubric)" stroke-width="1.3"/></svg>',
 };
@@ -755,7 +777,8 @@ function memberSheet(state, c, info) {
     return `<div><span style="font-weight:600">${esc(i.name)}</span>${sub ? `<br><span class="sub">${esc(sub)}</span>` : ''}</div>
       <div style="color:var(--ink-soft)">×${i.qty}</div><div>${btn}</div>`;
   };
-  const cond = c.conditions || [];
+  const cond = c.conditions || [], R = state.rules || {};
+  const cdef = n => (R.conditions || []).find(x => x.name === n) || {};
   return `
     <div style="display:flex;align-items:center;gap:16px">
       <span class="oval" aria-hidden="true" style="color:${hero ? 'var(--rubric-hi)' : inkOf(c.name)}">${esc(initial(c.name))}</span>
@@ -766,7 +789,7 @@ function memberSheet(state, c, info) {
       </div>
     </div>
     ${info.filling ? `<p class="writing" style="margin:0;font-size:16px">${QUILL('var(--ink)', 22, 26).replace('<svg', '<svg class="quill"')}Летописец дописывает карточку<span class="dot1">.</span><span class="dot2">.</span><span class="dot3">.</span></p>` : ''}
-    <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', c.hp, c.max_hp, 'hp')}${gauge('Мана', c.mp, c.max_mp, 'mp')}${gauge('Опыт', c.exp, c.exp_next, 'xp')}
+    <div style="display:flex;flex-direction:column;gap:10px">${gauge('Здоровье', c.hp, c.max_hp, 'hp')}${gauge(R.mp_label || 'Мана', c.mp, c.max_mp, 'mp')}${(R.resources || []).map(x => gauge(x.label, (c.res || {})[x.key] ?? x.max, x.max, 'res', [x.hint, x.zero && 'на нуле: ' + x.zero].filter(Boolean).join('; '))).join('')}${gauge('Опыт', c.exp, c.exp_next, 'xp')}
       ${c.weapon_line ? `<span class="sub">⚔ ${esc(c.weapon_line)} · 🛡 броня ${c.armor_total || 0}</span>` : ''}
 </div>
     ${!hero && c.description ? `<p style="margin:0;font-size:16px;line-height:1.5">${esc(c.description)}</p>` : ''}
@@ -774,7 +797,7 @@ function memberSheet(state, c, info) {
       ${c.attr_points ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:16px">
         <span>Свободные очки: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${c.attr_points}</b></span>
         <button class="tbtn" data-pre="Система, распредели ${esc(whom)}">Распределить…</button></div>` : ''}</section>
-    ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(x => `<div>${condIco(x.name)}<span>${esc(x.name[0].toUpperCase() + x.name.slice(1))}</span><em>${turnsLeft(x.turns_left)}${x.potency ? ` · −${x.potency} HP` : ''}</em></div>`).join('')}</div></section>` : ''}
+    ${cond.length ? `<section><h2 class="sh">Состояния</h2><div class="conds">${cond.map(x => `<div title="${esc(cdef(x.name).hint || '')}">${condIco(x.name)}<span>${esc(x.name[0].toUpperCase() + x.name.slice(1))}</span><em>${turnsLeft(x.turns_left)}${x.potency && cdef(x.name).kind !== 'mark' ? ` · ${cdef(x.name).kind === 'dot' || !cdef(x.name).kind ? '−' + x.potency + ' HP за раунд' : 'сила ' + x.potency}` : ''}</em></div>`).join('')}</div></section>` : ''}
     <section><h2 class="sh">Способности</h2>${abs.length ? `<div style="display:flex;flex-direction:column;gap:12px">${abs.filter(a => a.kind === 'active').concat(abs.filter(a => a.kind !== 'active')).map(abil).join('')}</div>` : '<p class="sub" style="margin:0">Пока ни одной.</p>'}</section>
     <section><h2 class="sh">Пути</h2><p style="margin:0 0 6px;font-size:16px">${c.ability_points ? `Свободно: <b style="font:700 19px/1 var(--f-head);color:var(--rubric)">${pts(c.ability_points)}</b> способностей.` : 'Свободных очков способностей нет — они приходят с уровнем.'}</p>
       <button class="tbtn" data-tab-go="book">Открыть Книгу путей</button></section>
@@ -848,7 +871,7 @@ function renderSheet(state) {
   const others = present.filter(i => !companions.includes(i) && !foes.includes(i));
   $('#presentN').textContent = present.length || '';
   const full = party.length >= (state.party_max || 4);
-  const ATTR_SHORT = { 'Сила': 'Сил', 'Ловкость': 'Лов', 'Выносливость': 'Вын', 'Воля': 'Вол', 'Разум': 'Раз', 'Влияние': 'Вли' };
+  const short = k => attrLabel(k).slice(0, 3);
   const near = (id, kind) => {
     const c = state.characters[id] || {}, rv = c.reveal || {}, known = rv.attrs && c.attrs && Object.keys(c.attrs).length;
     const seen = rv.kind && rv.attrs && rv.abilities;
@@ -860,7 +883,7 @@ function renderSheet(state) {
       <div class="bd"><div class="hd"><span class="npc" style="color:${inkOf(c.name)}">${esc(c.name || '?')}</span>${down ? '<span class="note">повержен(а)</span>' : seen && kind !== 'party' ? '<span class="note">осмотрен(а)</span>' : ''}</div>
       ${rv.kind ? `<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">${esc(c.kind || 'вид неизвестен')}</span>` : '<span style="font-size:15px;font-style:italic;color:var(--ink-soft)">вид неизвестен · характеристики скрыты</span>'}
       ${c.hp != null ? `<div class="bar hp thin"><span style="width:${pct(c.hp, c.max_hp)}%"></span></div><span style="font-size:14px;color:var(--ink-soft)">здоровье ${c.hp} / ${c.max_hp}${kind === 'party' ? ` · ур. ${c.level}` : ''}</span>` : ''}
-      ${known && kind !== 'party' ? `<span style="font-size:15px">${Object.entries(c.attrs).map(([k, v]) => `${ATTR_SHORT[k] || k} ${v}`).join(' · ')}</span>` : ''}
+      ${known && kind !== 'party' ? `<span style="font-size:15px">${Object.entries(c.attrs).map(([k, v]) => `${esc(short(k))} ${v}`).join(' · ')}</span>` : ''}
       ${rv.abilities && kind !== 'party' && (c.abilities || []).length ? `<span style="font-size:15px">${c.abilities.map(a => `${esc(a.name)} <i style="color:var(--ink-soft)">(${a.kind === 'active' ? 'акт.' : 'пасс.'})</i>`).join(' · ')}</span>` : ''}
       ${(c.conditions || []).length ? `<span style="font-size:14px;color:var(--rubric)">${c.conditions.map(x => esc(x.name) + ' · ' + x.turns_left).join(', ')}</span>` : ''}
       ${kind === 'party' ? `<div><button class="tbtn" data-who-open="${esc(id)}">Лист спутника</button></div>` : acts.length ? `<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">${acts.join('')}</div>` : ''}
