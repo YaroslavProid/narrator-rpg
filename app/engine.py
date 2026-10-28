@@ -1143,17 +1143,27 @@ class TurnEngine:
                 have = ", ".join(x.name for x in caster.abilities if x.kind == "active") or "нет"
                 return (f"У {caster.name} нет способности «{a.get('spell')}». Активные: {have}. "
                         f"Опиши попытку без результата или выбери другое действие.")
-            tgt = M.resolve_character(scene, a.get("target", "")) if a.get("target") else None
+            raw_t = a.get("target", "") or ""
+            named = [M.resolve_character(scene, x) for x in re.split(r"\s*(?:,|;|\sи\s)\s*", raw_t) if x.strip()]
+            named = [x for x in named if x is not None]
+            if ab.targets > 1 and re.search(r"(?<![а-яё])вс[еёя]", raw_t.lower()):      # «все враги»
+                pool = ([o.id for o in scene.combat.order] if scene.combat.active else scene.present)
+                named += [scene.characters[i] for i in pool if scene.characters[i].side == "hostile"
+                          and not M.in_party(scene, scene.characters[i]) and scene.characters[i].hp > 0]
+            tgt = named[0] if named else None
+            extra = [x for x in named[1:] if x.hp > 0] if ab.targets > 1 else []
             if tgt and tgt.hp <= 0 and ab.effect in ("damage", "debuff", "control"):
                 return f"{tgt.name} уже повержен(а). Выбери другую цель или закончи <end/>."
             if tgt and not tgt.is_player:
                 for x, y in ((caster, tgt), (tgt, caster)):
                     if ab.effect in ("damage", "debuff", "control") and M.in_party(scene, x) and not M.in_party(scene, y):
                         C.mark_foe(scene, y)
-            hp_before = tgt.hp if tgt else 0
-            r = C.cast(scene, caster, ab, tgt)
-            if r["ok"] and tgt and r["damage"]:
-                self._rewards(scene, caster, tgt, hp_before, r["msgs"])
+            before = {x.id: x.hp for x in [tgt] + extra if x}
+            r = C.cast(scene, caster, ab, tgt, extra)
+            if r["ok"] and r["damage"]:
+                for x in [tgt] + extra:
+                    if x and x.hp < before.get(x.id, 0):
+                        self._rewards(scene, caster, x, before[x.id], r["msgs"])
             full = r["text"] + ("\n" + "\n".join(r["msgs"]) if r["msgs"] else "")
             await self.sys_msg(emit, scene, full, "roll")
             transcript.append({"kind": "roll", "text": full})

@@ -5,7 +5,7 @@ import json, re
 from . import mechanics as M
 from .models import ATTRS, ATTR_MIGRATE
 
-# what an ability does is the AI's choice; how much is the code's (magic.card_ability, balance.py)
+# what an ability does — and how strong — is the AI's proposal; balance.fit keeps it in reach of the guide
 ABILITY_PROPS = {
     "name": {"type": "string", "minLength": 2, "maxLength": 40},
     "kind": {"type": "string", "enum": ["active", "passive"]},
@@ -13,6 +13,13 @@ ABILITY_PROPS = {
     "scale": {"type": "string", "enum": list(ATTRS)},
     "bonus": {"type": "string", "enum": list(M.BONUS_KEYS)},
     "description": {"type": "string", "maxLength": 200},
+    "power": {"type": "integer", "minimum": 0, "maximum": 100},
+    "mp": {"type": "integer", "minimum": 0, "maximum": 30},
+    "recharge": {"type": "integer", "minimum": 0, "maximum": 5},
+    "targets": {"type": "integer", "minimum": 1, "maximum": 3},
+    "rider": {"type": "string", "maxLength": 30},
+    "self_hp": {"type": "integer", "minimum": 0, "maximum": 30},
+    "rule": {"type": "string", "maxLength": 160},
 }
 
 WORLD_SCHEMA = {
@@ -54,7 +61,8 @@ SCENE_GEN_SCHEMA = {
                     "maxItems": 8,
                     "items": {
                         "type": "object",
-                        "required": ["name", "kind"],
+                        "required": ["name", "kind", "effect", "scale", "bonus", "power", "mp", "targets", "rider",
+                                     "self_hp", "recharge", "rule"],
                         "properties": ABILITY_PROPS,
                     },
                 },
@@ -141,7 +149,7 @@ NPC (присутствуют в стартовой сцене):
 - setting: 2–4 абзаца — лор и стартовая ситуация в этом облике мира. Без мета-комментариев.
 - player.kind — кто герой в этом мире одним-двумя словами (сыщица, наёмник, вор-карманник), по его описанию.
 - player.attrs — все из списка [{attrs}] (не D&D-скиллы), по прошлому героя.
-- player.abilities — 1–3 ИМЕНОВАННЫХ способности из прошлого героя: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты. Способности не нарушают world.rules (нет магии в мире — нет и заклинаний). Для каждой укажи, что она делает: активной — effect (damage — урон, heal — лечение, shield — защита, buff — усиление союзника, debuff — ослабление врага, control — враг теряет ход, utility — небоевое) и scale (атрибут, который её усиливает); пассивной — bonus (hp, mp, ac, melee, ranged, spell, heal, init). Чисел не пиши — их назначит Система. Дальше герой растёт по Книге путей.
+- player.abilities — 1–3 ИМЕНОВАННЫХ способности из прошлого героя: active (огненный шар, удар щитом) или passive (ночное зрение, нюх на ложь). НЕ пиши «Ближний бой=4» / «Знания» — это атрибуты. Способности не нарушают world.rules (нет магии в мире — нет и заклинаний). Для каждой укажи, что она делает: активной — effect (damage — урон, heal — лечение, shield — защита, buff — усиление союзника, debuff — ослабление врага, control — враг теряет ход, utility — небоевое) и scale (атрибут, который её усиливает); пассивной — bonus (hp, mp, ac, melee, ranged, spell, heal, init). Числа можешь предложить сам (power, mp): ориентир для старта — урон ≈12, лечение ≈10, щит ≈8, усиление ≈2, мана ≈4; сильнее — только за цену (больше маны, recharge — перезарядка в ходах, self_hp — плата здоровьем), несколько целей (targets) — меньше на каждую, rider — доп. состояние (горение, яд, страх). Необычную механику опиши в rule одной фразой. Система подрежет только явный перекос. Дальше герой растёт по Книге путей.
 - inventory: 4–8 предметов, у каждого why — откуда он у героя. Снаряжение вытекает из прошлого и рода занятий героя и из эпохи мира (никаких мечей в киберпанке и пистолетов в средневековье); оружие — то, чем герой реально умеет пользоваться; деньги — в местной валюте; 1–2 предмета прямо связаны с завязкой (письмо, долговая расписка, ключ, знак гильдии). Без легендарного.
 - npcs: description, personality, speech, secrets, kind (вид/тип: наёмник, дух, торговец…), опционально abilities. Их тайны и цели связаны с завязкой.
 - Не используй английский. Сразу готовый JSON.
@@ -191,7 +199,8 @@ def _abilities(raw) -> list[dict]:
             "scale": M.resolve_attr(str(x.get("scale") or "")) or "",
             "bonus": str(x.get("bonus") or "") if kind == "passive" else "",
             "description": str(x.get("description") or "").strip()[:200],
-        }.items()})
+        }.items()} | {k: x[k] for k in ("power", "mp", "recharge", "targets", "rider", "self_hp", "rule")
+                      if x.get(k) not in (None, "")})
         if len(out) >= 8:
             break
     return out

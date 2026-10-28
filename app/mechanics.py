@@ -716,6 +716,14 @@ def ability_stats(a: Ability, who: Character | None = None) -> str:
         bits.append(f"оглушение {n or 1} ход.")
     elif a.effect == "utility":
         bits.append("особое")
+    if a.targets > 1:
+        bits.append(f"до {a.targets} целей")
+    if a.rider:
+        bits.append(f"+{a.rider}")
+    if a.self_hp:
+        bits.append(f"плата {a.self_hp} HP")
+    if a.recharge:
+        bits.append(f"перезарядка {a.recharge} ход.")
     if a.mp:
         bits.append(f"{a.mp} MP")
     elif a.cost:

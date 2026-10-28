@@ -23,22 +23,43 @@ BRANCH_COST = {1: 1, 2: 2, 3: 2}                       # per branch tier
 EFFECTS = ["damage", "heal", "shield", "buff", "debuff", "control", "utility"]
 
 
+def _int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def make_ability(name: str, kind: str, effect: str, level: int, scale: str = "", bonus: str = "",
-                 description: str = "", path: str = "", tier: int = 0) -> Ability:
-    """Numbers come from the level only: the AI (or this file) picks what an ability does, never how much."""
+                 description: str = "", path: str = "", tier: int = 0, proposal: dict | None = None) -> Ability:
+    """What an ability does is the AI's — including its own numbers and mechanics (`proposal`: power, mp, recharge,
+    targets, rider, rider_turns, self_hp, rule, value). balance.fit keeps them unless they clearly outgrow their price;
+    without a proposal the ability gets the guide numbers of its level."""
     L = max(1, min(6, level))
+    pr = proposal or {}
     if kind == "passive":
         key = bonus if bonus in M.BONUS_KEYS else "hp"
-        return Ability(name=name[:40], kind="passive", effect="passive", bonus={key: B.PASSIVE[key](L)},
-                       description=description[:200], path=path, tier=tier, level=L)
+        return Ability(name=name[:40], kind="passive", effect="passive",
+                       bonus={key: B.fit_passive(key, L, _int(pr.get("value")))},
+                       description=description[:200], path=path, tier=tier, level=L,
+                       rule=str(pr.get("rule") or "").strip()[:160])
     effect = effect if effect in EFFECTS else "utility"
-    table = {"damage": B.DAMAGE, "heal": B.HEAL, "shield": B.SHIELD, "buff": B.POTENCY, "debuff": B.POTENCY,
-             "control": B.CONTROL}.get(effect)
-    power = str(table[L]) if table else ""
-    mp = B.MP_COST[L] if effect != "utility" else max(1, B.MP_COST[L] // 2)
+    rider = re.sub(r"\s+", " ", str(pr.get("rider") or "")).strip().lower()[:30]
+    f = B.fit(effect, L, _int(pr.get("power")), _int(pr.get("mp")), _int(pr.get("recharge")),
+              _int(pr.get("targets")) or 1, _int(pr.get("self_hp")), bool(rider))
+    power = str(f["power"]) if (effect in B.GUIDE or f["power"]) else ""
     scale = M.resolve_attr(scale) or ""
-    return Ability(name=name[:40], kind="active", effect=effect, power=power, scale=scale, mp=mp, cost=f"{mp} MP",
-                   description=description[:200], path=path, tier=tier, level=L)
+    return Ability(name=name[:40], kind="active", effect=effect, power=power, scale=scale, mp=f["mp"],
+                   cost=f"{f['mp']} MP", description=description[:200], path=path, tier=tier, level=L,
+                   targets=f["targets"], rider=rider, rider_turns=max(0, min(5, _int(pr.get("rider_turns")))) or (2 if rider else 0),
+                   self_hp=f["self_hp"], recharge=f["recharge"], rule=str(pr.get("rule") or "").strip()[:160])
+
+
+PROPOSAL_KEYS = ("power", "mp", "recharge", "targets", "rider", "rider_turns", "self_hp", "rule", "value")
+
+
+def proposal_of(raw: dict) -> dict:
+    return {k: raw[k] for k in PROPOSAL_KEYS if isinstance(raw, dict) and raw.get(k) not in (None, "")}
 
 
 ABILITY_EFFECTS = EFFECTS + ["passive"]
@@ -57,10 +78,12 @@ def card_ability(raw: dict, level: int = 1) -> Ability | None:
     desc = str(raw.get("description") or "").strip()[:200]
     eff = str(raw.get("effect") or "").lower()
     if kind == "passive" and raw.get("bonus") in M.BONUS_KEYS:
-        return make_ability(name, "passive", "", level, "", raw["bonus"], desc)
-    if kind == "active" and eff in EFFECTS:
-        return make_ability(name, "active", eff, level, str(raw.get("scale") or ""), "", desc)
-    return Ability(name=name, kind=kind, description=desc, cooldown=str(raw.get("cooldown") or "").strip()[:40])
+        return make_ability(name, "passive", "", level, "", raw["bonus"], desc, proposal=proposal_of(raw))
+    if kind == "active" and (eff in EFFECTS or raw.get("rule")):
+        return make_ability(name, "active", eff or "utility", level, str(raw.get("scale") or ""), "", desc,
+                            proposal=proposal_of(raw))
+    return Ability(name=name, kind=kind, description=desc, cooldown=str(raw.get("cooldown") or "").strip()[:40],
+                   rule=str(raw.get("rule") or "").strip()[:160])
 
 
 def rebalance(paths: list[MagicPath], learned: list[Ability]) -> int:
@@ -75,7 +98,11 @@ def rebalance(paths: list[MagicPath], learned: list[Ability]) -> int:
     for a in [a for p in paths for t in p.tiers for a in t.abilities] + [a for a in learned if a.path or a.level]:
         L = levels.get((a.path, a.tier)) or a.level or a.tier or 1
         bonus = next(iter(a.bonus), "") if a.bonus else ""
-        fresh = make_ability(a.name, a.kind, a.effect, L, a.scale, bonus, a.description, a.path, a.tier)
+        legacy = not re.fullmatch(r"\s*\d*\s*", a.power or "")      # old dice ('1d8') were a scale, not a choice
+        prop = {"power": 0 if legacy else B.to_number(a.power), "mp": 0 if legacy else a.mp, "recharge": a.recharge, "targets": a.targets,
+                "rider": a.rider, "rider_turns": a.rider_turns, "self_hp": a.self_hp, "rule": a.rule,
+                "value": next(iter(a.bonus.values()), 0) if a.bonus else 0}
+        fresh = make_ability(a.name, a.kind, a.effect, L, a.scale, bonus, a.description, a.path, a.tier, prop)
         if (fresh.power, fresh.mp, fresh.bonus, fresh.level) != (a.power, a.mp, a.bonus, a.level):
             a.power, a.mp, a.cost, a.bonus, a.level = fresh.power, fresh.mp, fresh.cost, fresh.bonus, fresh.level
             n += 1
@@ -341,7 +368,16 @@ BRANCH_SYS = """Ты — архитектор прокачки текстово�
    - Для пассивной способности выбери bonus: hp — больше здоровья; mp — больше маны; ac — труднее попасть; melee — урон в
      ближнем бою; ranged — урон дальним оружием; spell — сила заклинаний; heal — сила лечения; init — инициатива.
    - Название 1–3 слова, без кавычек. Описание — одна образная фраза о том, как это выглядит в мире.
-   - НИКАКИХ чисел, кубиков, маны, длительностей и стоимостей — их назначит Система по единой шкале. Не пиши «наносит 10 урона».
+   - Числа предлагаешь ты. Ориентир силы для каждой ступени дан в запросе — это обычная способность её уровня, не потолок
+     и не пол. Слабее — всегда можно. Сильнее — только за цену: больше маны (mp), перезарядка в ходах (recharge), плата
+     здоровьем (self_hp). Несколько целей (targets 2–3) — меньше на каждую. Дополнительное состояние на цель (rider:
+     горение, яд, кровотечение, страх, замедление… и rider_turns) — основной эффект чуть слабее.
+   - Можно придумать небывалое: обмен местами, невидимость, призыв, чтение памяти, щит, отражающий удар, — опиши правило
+     одной фразой в rule (что именно происходит в игре, на сколько и с кем). Не вписывается в effect — бери utility + rule.
+   - Заполняй поля, а не пересказывай их в rule: несколько целей — targets, состояние — rider и rider_turns, плата здоровьем —
+     self_hp, перезарядка — recharge, сила — power (для пассивной — value). Нет такой стороны — 0 или "". В rule пиши только
+     то, чего в полях нет; если нечего — "".
+     Числа и цену Система сверит с ориентиром и подрежет только явный перекос.
    - Не повторяй способности основных путей и других отраслей.
 6. trial — сюжетное условие для ступени III: конкретное событие, которое должно случиться в истории, привязанное к миру и
    к тому, как герой изучил искусство: «Превзойти наставника-пироманта в поединке», «Провести ночь в храме Пепла».
@@ -351,14 +387,33 @@ BRANCH_SYS = """Ты — архитектор прокачки текстово�
 Подстраивайся под мир: в мрачном фэнтези — мрачно, в киберпанке — технологично, в хорроре — жутко. Без юмора, если мир серьёзен."""
 
 
+PROPOSAL_SCHEMA = {"power": {"type": "integer", "minimum": 0, "maximum": 200},
+                   "mp": {"type": "integer", "minimum": 0, "maximum": 60},
+                   "recharge": {"type": "integer", "minimum": 0, "maximum": 5},
+                   "targets": {"type": "integer", "minimum": 1, "maximum": 3},
+                   "rider": {"type": "string", "maxLength": 30},
+                   "rider_turns": {"type": "integer", "minimum": 0, "maximum": 5},
+                   "self_hp": {"type": "integer", "minimum": 0, "maximum": 60},
+                   "value": {"type": "integer", "minimum": 0, "maximum": 30},
+                   "rule": {"type": "string", "maxLength": 160}}
+
+
+def guide_line(level: int) -> str:
+    L = max(1, min(6, level))
+    return (f"урон ≈{B.DAMAGE[L]}, лечение ≈{B.HEAL[L]}, щит ≈{B.SHIELD[L]}, усиление/ослабление ≈{B.POTENCY[L]}, "
+            f"оглушение ≈{B.CONTROL[L]} р., мана ≈{B.MP_COST[L]}; пассивно: здоровье +{B.PASSIVE['hp'](L)}, "
+            f"урон +{B.PASSIVE['melee'](L)}")
+
+
 def branch_schema(scene: Scene) -> dict:
-    ab = {"type": "object", "required": ["name", "kind", "effect", "scale", "bonus", "description"],
+    ab = {"type": "object", "required": ["name", "kind", "effect", "scale", "bonus", "description", "power", "mp",
+                                         "targets", "rider", "rider_turns", "self_hp", "recharge", "value", "rule"],
           "properties": {"name": {"type": "string", "maxLength": 40},
                          "kind": {"type": "string", "enum": ["active", "passive"]},
                          "effect": {"type": "string", "enum": EFFECTS},
                          "scale": {"type": "string", "enum": list(ATTRS)},
                          "bonus": {"type": "string", "enum": list(M.BONUS_KEYS)},
-                         "description": {"type": "string", "maxLength": 160}}}
+                         "description": {"type": "string", "maxLength": 160}} | PROPOSAL_SCHEMA}
     return {
         "type": "object", "required": ["same_as", "name", "description", "parents", "trial", "tiers"],
         "properties": {
@@ -390,6 +445,9 @@ def branch_request(scene: Scene, lead: Lead) -> str:
               for p in br] or ["нет"]
     p = scene.player
     lines.append(f"\n# Герой\n{p.name}, {p.kind or 'без вида'}. Способности: {', '.join(a.name for a in p.abilities) or 'нет'}.")
+    depth = 1 if not lead.how else 2
+    lines.append("\n# Ориентир силы (обычная способность уровня; глубина отрасли сдвигает его вверх)")
+    lines += [f"- ступень {ROMAN[n]} при глубине {d}: " + guide_line(d + n) for d in (1, 2) for n in (1, 2, 3)]
     lines.append("\nСоздай отрасль по инструкции.")
     return "\n".join(lines)
 
@@ -433,7 +491,7 @@ def balance_branch(scene: Scene, raw: dict, lead: Lead) -> MagicPath | None:
             kind = "passive" if a.get("kind") == "passive" else "active"
             eff = a.get("effect") if a.get("effect") in EFFECTS else "utility"
             abil.append(make_ability(an, kind, eff, depth + n, str(a.get("scale") or ""), str(a.get("bonus") or ""),
-                                     str(a.get("description") or ""), slug, n))
+                                     str(a.get("description") or ""), slug, n, proposal_of(a)))
             has_active |= kind == "active"; has_passive |= kind == "passive"
         if not abil:
             return None

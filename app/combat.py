@@ -434,9 +434,9 @@ def tick_conditions(scene: Scene) -> str:
     for c in scene.characters.values():
         keep = []
         for cond in c.conditions:
-            if cond.name == "кровотечение" and cond.potency > 0 and c.hp > 0:
+            if cond.name in B.DOT and cond.potency > 0 and c.hp > 0:
                 old = c.hp; c.hp = max(0, c.hp - cond.potency)
-                msgs.append(f"{c.name}: кровотечение −{cond.potency} HP ({old}→{c.hp})")
+                msgs.append(f"{c.name}: {cond.name} −{cond.potency} HP ({old}→{c.hp})")
                 if c.hp == 0:
                     fallen.append(c)
             if cond.name == "оглушение" and _waits_turn(scene, c):
@@ -923,15 +923,22 @@ def is_physical(a: Ability) -> bool:
     return a.scale in ("Сила", "Ловкость")
 
 
-def cast(scene: Scene, caster: Character, a: Ability, target: Character | None) -> dict:
-    """Use an active ability: code spends MP and applies its number amplified by the attribute.
-    Abilities without mechanics (from cards) only cost MP; the narrator describes their effect."""
+def cast(scene: Scene, caster: Character, a: Ability, target: Character | None,
+         extra: list[Character] | None = None) -> dict:
+    """Use an active ability: code spends MP (and the health it costs), applies its number amplified by the attribute
+    to up to `a.targets` targets, puts its rider condition and starts its recharge. Its `rule` — a mechanic in words —
+    goes to the narrator. Abilities without numbers only cost MP; the narrator describes their effect."""
     if a.kind != "active":
         return {"ok": False, "text": f"«{a.name}» — пассивная способность, она действует сама.", "msgs": [], "damage": 0}
     mp = ability_mp(a)
+    wait = caster.ready_at.get(a.name, 0) - scene.turn
+    if wait > 0:
+        return {"ok": False, "text": f"✨ {caster.name}: «{a.name}» перезаряжается — ещё {wait} ход.", "msgs": [], "damage": 0}
     if caster.mp < mp:
         return {"ok": False, "text": f"✨ {caster.name}: «{a.name}» — не хватает MP ({caster.mp}/{mp}). Не сработало.",
                 "msgs": [], "damage": 0}
+    if a.self_hp and caster.hp <= a.self_hp:
+        return {"ok": False, "text": f"✨ {caster.name}: «{a.name}» требует {a.self_hp} HP — сил не хватит.", "msgs": [], "damage": 0}
     if any(x.name == "оглушение" for x in caster.conditions):
         return {"ok": False, "text": f"✨ {caster.name} оглушён и не может применить «{a.name}».", "msgs": [], "damage": 0}
     eff = a.effect or "utility"
@@ -939,49 +946,75 @@ def cast(scene: Scene, caster: Character, a: Ability, target: Character | None) 
         target = caster
     if eff in ("damage", "debuff", "control") and target is None:
         return {"ok": False, "text": f"✨ «{a.name}»: нужна цель.", "msgs": [], "damage": 0}
+    targets = [t for t in [target] + list(extra or []) if t is not None]
+    seen = set(); targets = [t for t in targets if not (t.id in seen or seen.add(t.id))][:max(1, a.targets)]
     caster.mp -= mp
-    head = f"✨ {caster.name}: «{a.name}»" + (f" → {target.name}" if target and target is not caster else "") + (f" (−{mp} MP)" if mp else "")
-    msgs, dmg = [], 0
+    paid = ""
+    if a.self_hp:
+        caster.hp -= a.self_hp; paid = f", −{a.self_hp} HP"
+    if a.recharge:
+        caster.ready_at[a.name] = scene.turn + a.recharge + 1
+    names = ", ".join(t.name for t in targets if t is not caster)
+    head = f"✨ {caster.name}: «{a.name}»" + (f" → {names}" if names else "") + (f" (−{mp} MP{paid})" if mp or paid else "")
+    msgs, dmg, parts = [], 0, []
+    if eff in ("damage", "debuff", "control") and not scene.combat.active and \
+            (eff == "damage" or any(t.side == "hostile" for t in targets)):
+        start_combat(scene, [caster.id] + [t.id for t in targets], first=caster.id)
+    for t in targets:
+        part, d, more = _apply(scene, caster, a, eff, t)
+        parts.append(part); dmg += d; msgs += more
+    text = head + ": " + "; ".join(parts) if parts else head + ": применено."
+    if a.rule:
+        text += f" Правило способности: {a.rule}."
+    return {"ok": True, "text": text, "msgs": msgs, "damage": dmg}
+
+
+def _rider(a: Ability, t: Character, v: int) -> str:
+    if not a.rider or t.hp <= 0:
+        return ""
+    pot = max(1, v // 5) if a.rider in B.DOT else 0
+    apply_condition(t, a.rider, turns=a.rider_turns or 2, potency=pot)
+    return f", {a.rider} ({a.rider_turns or 2} р." + (f", −{pot} HP за раунд" if pot else "") + ")"
+
+
+def _apply(scene: Scene, caster: Character, a: Ability, eff: str, target: Character) -> tuple[str, int, list[str]]:
+    """One target of an ability: (text, damage dealt, messages)."""
+    who = f"{target.name}: " if a.targets > 1 else ""
     if eff == "damage":
-        if not scene.combat.active:
-            start_combat(scene, [caster.id, target.id], first=caster.id)
         phys = is_physical(a)
         key = ("ranged" if a.scale == "Ловкость" else "melee") if phys else "spell"
         v, s = magical(scene, caster, a, key)
         if phys:
             v += cond_potency(caster, "усиление") - cond_potency(caster, "ослабление")
-        dmg, land = hurt(scene, target, max(1, v), phys)
-        text = f"{head}: {s}{land}"
-        text, more = knockout(scene, target, text); msgs += more
-    elif eff == "heal":
+        d, land = hurt(scene, target, max(1, v), phys)
+        text, more = knockout(scene, target, f"{who}{s}{land}" + _rider(a, target, v))
+        return text, d, more
+    if eff == "heal":
         v, s = magical(scene, caster, a, "heal")
         old = target.hp; target.hp = min(target.max_hp, target.hp + v)
-        text = f"{head}: лечение {s} → +{target.hp - old} HP ({old}→{target.hp}/{target.max_hp})"
-    elif eff == "shield":
+        return f"{who}лечение {s} → +{target.hp - old} HP ({old}→{target.hp}/{target.max_hp})", 0, []
+    if eff == "shield":
         v, s = magical(scene, caster, a, "")
         apply_condition(target, "щит", turns=3, potency=v)
-        text = f"{head}: щит {s} — поглотит {v} урона (3 раунда)"
-    elif eff == "buff":
+        return f"{who}щит {s} — поглотит {v} урона (3 раунда)", 0, []
+    if eff == "buff":
         v, _ = magical(scene, caster, a, "", levelled=False)
         apply_condition(target, "усиление", turns=3, potency=v)
-        text = f"{head}: усиление +{v} к урону и +{round(B.BUFF_HIT * 100)}% к попаданию (3 раунда)"
-    elif eff in ("debuff", "control"):
-        if not scene.combat.active and target.side == "hostile":
-            start_combat(scene, [caster.id, target.id], first=caster.id)
+        return f"{who}усиление +{v} к урону и +{round(B.BUFF_HIT * 100)}% к попаданию (3 раунда)", 0, []
+    if eff in ("debuff", "control"):
         ok, roll_s = resist(scene, caster, a, target)
         if not ok:
-            text = f"{head}: {roll_s} — {target.name} сопротивляется."
-        elif eff == "debuff":
+            return f"{who}{roll_s} — {target.name} сопротивляется", 0, []
+        if eff == "debuff":
             v, _ = magical(scene, caster, a, "", levelled=False)
             apply_condition(target, "ослабление", turns=2, potency=v)
-            text = f"{head}: {roll_s} — ослабление −{v} к урону и −{round(B.BUFF_HIT * 100)}% к попаданию (2 раунда)"
-        else:
-            turns = max(1, B.to_number(a.power) or 1)
-            apply_condition(target, "оглушение", turns=turns)
-            text = f"{head}: {roll_s} — {target.name} оглушён ({turns} раунд.)"
-    else:
-        text = f"{head}: применено. Эффект описывает рассказчик."
-    return {"ok": True, "text": text, "msgs": msgs, "damage": dmg}
+            return (f"{who}{roll_s} — ослабление −{v} к урону и −{round(B.BUFF_HIT * 100)}% к попаданию (2 раунда)"
+                    + _rider(a, target, v)), 0, []
+        turns = max(1, B.to_number(a.power) or 1)
+        apply_condition(target, "оглушение", turns=turns)
+        return f"{who}{roll_s} — {target.name} оглушён ({turns} раунд.)" + _rider(a, target, 0), 0, []
+    n = B.to_number(a.power)
+    return (f"{who}эффект описывает рассказчик" + (f" (сила {n})" if n else "") + _rider(a, target, n)), 0, []
 
 
 def combat_status(scene: Scene) -> str:

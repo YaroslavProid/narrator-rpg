@@ -60,7 +60,10 @@ ARMOR = {"кожан": (1, "тело"), "стёган": (1, "тело"), "сте
 NOT_GEAR = re.compile(r"сумк|мешоч|мешок|кошел|пояс|ремен|ножн|флакон|фляг|перчатк|сапог|ботин|плащ|книг|свиток|амулет|"
                       r"кольц|цепочк|украшен|лукошк|вилк", re.I)
 
-# ---------------- abilities (power level 1..6) ----------------
+# ---------------- abilities (power level 1..6): a GUIDE, not a cage ----------------
+# What an ordinary ability of that level does. The AI proposes its own numbers and mechanics (several targets, an extra
+# condition, a recharge, a price in health, a rule of its own); fit() keeps what is within reach of the guide — the price
+# pays for power — and only trims a clear excess. Weaker than the guide is always fine.
 DAMAGE = {1: 12, 2: 16, 3: 22, 4: 30, 5: 40, 6: 52}
 HEAL = {1: 10, 2: 14, 3: 20, 4: 26, 5: 34, 6: 44}
 SHIELD = {1: 8, 2: 12, 3: 16, 4: 22, 5: 30, 6: 38}
@@ -72,6 +75,70 @@ BUFF_HIT = 0.10                                       # an active buff (or debuf
 PASSIVE = {"hp": lambda L: 6 * L, "mp": lambda L: 4 * L, "ac": lambda L: 1 if L < 4 else 2,
            "melee": lambda L: L + 1, "ranged": lambda L: L + 1, "spell": lambda L: L + 1, "heal": lambda L: L + 1,
            "init": lambda L: L}
+
+TOLERANCE = 0.35                 # up to +35% over what the price allows is kept as the AI wrote it
+TARGET_SHARE = {1: 1.0, 2: 0.65, 3: 0.5}        # several targets: each takes this share of the power
+RIDER_SHARE = 0.85               # an extra condition on top (горение, яд, страх…) costs 15% of the power
+MP_MAX_MULT = 2.5                # mana up to 2.5× the guide
+RECHARGE_MAX = 5                 # turns
+DOT = ("кровотечение", "горение", "яд", "отравление", "кислота", "гниение")   # conditions that hurt every round
+GUIDE = {"damage": DAMAGE, "heal": HEAL, "shield": SHIELD, "buff": POTENCY, "debuff": POTENCY, "control": CONTROL}
+
+
+def guide(effect: str, level: int) -> int:
+    t = GUIDE.get(effect)
+    return t[max(1, min(6, level))] if t else 0
+
+
+def guide_mp(effect: str, level: int) -> int:
+    m = MP_COST[max(1, min(6, level))]
+    return m if effect != "utility" else max(1, m // 2)
+
+
+def price_mult(effect: str, level: int, mp: int, recharge: int = 0, self_hp: int = 0) -> float:
+    """How much stronger than the guide the price lets an ability be: mana over the guide buys power at half rate
+    (less mana — less power), every turn of recharge +15%, health paid +50% of its share of a level's damage."""
+    gm = guide_mp(effect, level)
+    m = 1 + 0.5 * (mp / gm - 1) if gm and mp else 1.0
+    m += 0.15 * max(0, min(RECHARGE_MAX, recharge))
+    if self_hp:
+        m += 0.5 * self_hp / max(1, guide("damage", level))
+    return max(0.5, min(2.0, m))
+
+
+def fit(effect: str, level: int, power: int = 0, mp: int = 0, recharge: int = 0, targets: int = 1,
+        self_hp: int = 0, rider: bool = False) -> dict:
+    """Take the AI's proposal and keep it unless it clearly outgrows its price. Returns the numbers to use and a note
+    (empty when nothing was changed)."""
+    L = max(1, min(6, level))
+    gm = guide_mp(effect, L)
+    mp = max(1, min(round(gm * MP_MAX_MULT), int(mp))) if mp and mp > 0 else gm
+    recharge = max(0, min(RECHARGE_MAX, int(recharge or 0)))
+    targets = max(1, min(3, int(targets or 1)))
+    self_hp = max(0, min(guide("damage", L), int(self_hp or 0)))
+    pm = price_mult(effect, L, mp, recharge, self_hp)
+    note = ""
+    if effect == "control":                  # rounds of stun: the price buys at most one more round
+        cap = CONTROL[L] + (1 if pm >= 1.4 else 0) - (1 if targets > 1 else 0) - (1 if rider else 0)
+        cap = max(1, cap)
+        power = int(power or 0) or cap
+        if power > cap:
+            note, power = f"оглушение урезано до {cap} р.", cap
+    elif effect in GUIDE:
+        allowed = guide(effect, L) * pm * TARGET_SHARE[targets] * (RIDER_SHARE if rider else 1)
+        top = max(1, round(allowed * (1 + TOLERANCE)))
+        power = int(power or 0) or max(1, round(allowed))
+        if power > top:
+            note, power = f"сила урезана до {top} (цена позволяет до {top})", top
+    else:
+        power = max(0, int(power or 0))
+    return {"power": power, "mp": mp, "recharge": recharge, "targets": targets, "self_hp": self_hp, "note": note}
+
+
+def fit_passive(key: str, level: int, value: int = 0) -> int:
+    g = PASSIVE[key](max(1, min(6, level)))
+    return max(1, min(round(g * 1.5) if g > 1 else 2, int(value))) if value and value > 0 else g
+
 
 # ---------------- consumables (power 1..4) ----------------
 POTION_HEAL = {1: 15, 2: 25, 3: 40, 4: 60}

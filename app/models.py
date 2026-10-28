@@ -50,6 +50,13 @@ class Ability(BaseModel):
     path: str = ""       # path id it comes from
     tier: int = 0
     level: int = 0       # power level 1..6 on the balance scale (path abilities)
+    # the AI's own mechanics (balance.fit keeps them in reach of the guide)
+    targets: int = 1     # how many targets at once (each takes a share of the power)
+    rider: str = ""      # an extra condition on the target: горение, яд, страх, замедление…
+    rider_turns: int = 0
+    self_hp: int = 0     # health the user pays
+    recharge: int = 0    # turns before it can be used again
+    rule: str = ""       # a mechanic in words the narrator applies («меняется местами с целью», «видит сквозь стены»)
 
 
 class PathReq(BaseModel):
@@ -130,6 +137,7 @@ class Character(BaseModel):
     threat: str = ""                  # foes: слабый | обычный | опасный | элита | босс (sets stats and the EXP reward)
     inspect_turn: int = -100          # last failed «осмотри»: another try only a few turns later
     paths: dict[str, int] = {}        # path id -> highest rank/tier opened
+    ready_at: dict[str, int] = {}     # ability name -> the turn it can be used again (recharge)
 
     @model_validator(mode="before")
     @classmethod
