@@ -86,12 +86,12 @@ def test_health_and_mana_follow_the_formula_and_level():
 
 def test_foe_sheet_from_threat_and_numbers_in_card_abilities():
     s = mk()
-    foe = ch(s, "Борек"); C.mark_foe(s, foe, "элита")
+    foe = ch(s, "Борек"); foe.side = "hostile"; C.apply_threat(s, foe, "элита")   # the sheet, not the budget
     off, hp0, base, dmg, arm = B.THREATS["элита"]
     assert foe.level == 1 + off and foe.attrs["Сила"] == base and foe.max_hp == round(hp0 * B.level_mult(foe.level))
     w = C.equipped_weapon(foe)
     assert int(w.damage) == dmg and C.armor_value(foe) == arm
-    s.player.level = 5; foe2 = ch(s, "Сильфа"); M.leave_party(s, foe2); C.mark_foe(s, foe2, "обычный")
+    s.player.level = 5; foe2 = ch(s, "Сильфа"); M.leave_party(s, foe2); C.apply_threat(s, foe2, "обычный")
     assert foe2.level == 5 and foe2.max_hp == round(B.THREATS["обычный"][1] * B.level_mult(5))   # grows with the hero
     a = G.card_ability({"name": "Огненный плевок", "kind": "active", "effect": "damage", "scale": "Разум"})
     assert a.power == str(B.DAMAGE[1]) and a.mp == B.MP_COST[1] and not a.path

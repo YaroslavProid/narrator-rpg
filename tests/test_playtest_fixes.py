@@ -41,7 +41,7 @@ def test_a_fall_through_change_is_a_real_fall_and_a_wiped_party_does_not_softloc
     p = ch(s, "Пёс"); C.start_combat(s, [p.id])
     s.player.hp = 0
     text, more = C.knockout(s, s.player, "")
-    assert not s.combat.active and any("Отряд пал" in m for m in more) and s.player.hp == 1
+    assert not s.combat.active and any("Отряд пал" in m for m in more) and s.player.hp == round(s.player.max_hp * 0.25)
 
 
 def test_a_threat_without_side_does_not_make_an_enemy():
@@ -113,9 +113,10 @@ def test_trading_blows_lands_the_foes_blow_and_strikes_back():
 def test_change_with_an_arrow_and_garbage():
     s = mk(); s.player.hp = 0
     run(s, [('<change who="Ярен" hp="0->5"', "/>"), ("<end", "/>")], "*пью зелье*")
-    assert s.player.hp == 5
+    assert s.player.hp >= 5                          # +5 by the arrow, then a breath of rest out of a fight
+    hp = s.player.hp
     msgs, rej = M.apply_delta(s, s.player, {"hp": "3->"})
-    assert s.player.hp == 5 and rej and "непонятное значение" in rej[0]
+    assert s.player.hp == hp and rej and "непонятное значение" in rej[0]
 
 
 def test_a_reaction_settled_after_the_narrator_is_described_next_turn():
@@ -144,7 +145,8 @@ def test_combat_start_in_a_running_fight_is_silent_and_the_heros_blow_still_land
 
 def test_the_same_line_twice_is_refused():
     s = mk()
-    outs = [('<speak who="Сильфа" intent="закричать Гони!"', "/>"), ("Гони!", "»")] * 4 + [("<end", "/>")]
+    outs = [(f'<speak who="Сильфа" intent="закричать Гони!{"!" * i}"', "/>") if k == 0 else ("Гони!", "»")
+            for i in range(4) for k in (0, 1)] + [("<end", "/>")]      # near-identical lines, not the same tag
     eng, ev = run(s, outs, "*жду*")
     said = [t for t in s.turns if t["role"] == "user" and t["content"].startswith("[СИСТЕМА: результат] Сильфа:")]
     assert len(said) == 1 and any("уже сказал" in t["content"] for t in s.turns)
@@ -202,3 +204,78 @@ def test_the_counter_in_a_trade_uses_the_named_weapon():
                            C.ensure_item_stats(Item(name="Охотничий нож"))]
     eng, ev = run(s, [("<narrate>Сталь.</narrate><end", "/>")], "*бью его ножом*")
     assert any(l.startswith("↩ Контратака") and "Охотничий нож" in l for l in rolls(ev))
+
+
+# ---- round 3 ----
+def test_the_same_tag_twice_ends_the_turn_and_missing_abilities_are_refusals():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    outs = [('<cast who="Ярен" spell="Небесный огонь" target="Сильфа"', "/>")] * 6 + [("<end", "/>")]
+    eng, ev = run(s, outs, "*колдую*")
+    assert len(eng.llm.prompts) <= 2
+
+
+def test_one_fighting_action_per_input_and_no_blow_without_the_players_words():
+    s = mk(); m = fight(s)
+    eng, ev = run(s, [('<attack who="Ярен" target="Мародёр"', "/>"), ('<attack who="Ярен" target="Мародёр"', "/>"),
+                      ('<deed who="Ярен" attr="Ловкость" difficulty="легко" effect="урон" target="Мародёр" how="пинок"', "/>"),
+                      ("<end", "/>")], "*бью мародёра*")
+    assert sum(1 for l in rolls(ev) if l.startswith(("⚔️ Ярен", "✦ Ярен"))) == 1
+    s2 = mk(); fight(s2)
+    eng, ev = run(s2, [('<attack who="Ярен" target="Мародёр"', "/>"), ("<end", "/>")],
+                  "*поднимаю руки и предлагаю ему золото*")
+    assert not any(l.startswith("⚔️ Ярен") for l in rolls(ev)) and "не писал, что герой нападает" in s2.turns[-2]["content"]
+
+
+def test_a_deed_named_like_an_ability_is_cast_as_that_ability():
+    from app import magic as G
+    s = mk(); m = fight(s); p = s.player; p.mp = 30
+    p.abilities.append(G.make_ability("Тяжёлый удар", "active", "damage", 1, "Сила"))
+    eng, ev = run(s, [('<deed attr="Сила" difficulty="обычно" effect="урон" target="Мародёр" how="тяжёлый удар"', "/>"),
+                      ("<end", "/>")], "*наношу Тяжёлый удар по мародёру*")
+    assert any("«Тяжёлый удар»" in l for l in rolls(ev)) and p.mp < 30
+
+
+def test_an_encounter_the_party_can_stand():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    eng, ev = run(s, [('<introduce name="Гоблин" count="5" side="враг" threat="обычный"', "/>"), ("<end", "/>")], "*иду*")
+    gob = [c for c in s.characters.values() if c.name.startswith("Гоблин") and c.side == "hostile"]
+    weight = sum(C.THREAT_WEIGHT[c.threat] for c in gob)
+    assert [c.threat for c in gob] == ["обычный", "слабый"] and weight <= 1.5      # one regular, one weak, no more
+    assert any("не выстоять" in t["content"] for t in s.turns)
+
+
+def test_rest_out_of_a_fight_and_atomic_exchange_and_worn_kit_and_vials():
+    from app.engine import create_scene
+    s = create_scene("Т", "мир", {"name": "Ада", "inventory": ["Короткий меч", "Кожаная броня", "Склянка с микстурой",
+                                                              "Склянка с ядом"]}, [], "система", seed=2)
+    p = s.player
+    assert all(i.equipped for i in p.inventory if i.kind in ("оружие", "броня"))
+    vial = {i.name: i.effect for i in p.inventory}
+    assert vial["Склянка с микстурой"] == "heal" and vial["Склянка с ядом"] != "heal"
+    p.hp = 10
+    run(s, [("<narrate>Тихо.</narrate><end", "/>")], "*сижу у костра*")
+    assert p.hp > 10
+    n = len(p.inventory)
+    msgs, rej = M.apply_delta(s, p, {"add": "Ключ", "remove": "Золотой слиток"})
+    assert len(p.inventory) == n and "обмен отклонён" in rej[0]
+
+
+def test_a_resource_is_not_also_an_attribute():
+    from app import rules as R
+    r = R.from_ai({"extra_attrs": [{"label": "Рассудок"}], "resources": [{"label": "Рассудок", "max": 10}]})
+    assert not r.extra_attrs and r.resources[0].label == "Рассудок"
+
+
+def test_the_fight_tier_does_not_stick_after_a_fight():
+    s = mk(); m = fight(s); m.hp = 0
+    C.knockout(s, m, "")
+    run(s, [("<narrate>Тихо.</narrate><end", "/>")], "«Ну и денёк.»")
+    assert "бой" not in " ".join(s.stats[-1]["tier_reasons"])
+
+
+def test_peaceful_newcomers_who_turn_hostile_also_fit_the_budget():
+    s = mk(); M.leave_party(s, ch(s, "Сильфа"))
+    run(s, [('<introduce name="Гоблин" count="3" desc="у костра"', "/>"), ("<end", "/>")], "*смотрю*")
+    gob = [ch(s, f"Гоблин {i}") for i in (1, 2, 3)]
+    C.start_combat(s, [g.id for g in gob])
+    assert sum(C.THREAT_WEIGHT[g.threat] for g in gob) <= 2.0          # обычный + слабый + слабый at most

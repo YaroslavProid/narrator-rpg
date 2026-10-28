@@ -135,7 +135,7 @@ def test_companion_stays_in_scene():
 def test_introduce_pack_of_foes():
     s = mk()
     eng, llm, ev = run_turn(s, [
-        ('<narrate>Из тумана выходят твари.</narrate><introduce name="Лесная тварь" count="3" side="враг" desc="серая шерсть"', "/>"),
+        ('<narrate>Из тумана выходят твари.</narrate><introduce name="Лесная тварь" count="3" side="враг" threat="слабый" desc="серая шерсть"', "/>"),
         ("<end", "/>"),
     ])
     foes = [c for c in s.characters.values() if c.name.startswith("Лесная тварь ")]

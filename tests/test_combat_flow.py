@@ -30,7 +30,7 @@ def rolls(ev):
 
 
 def test_threat_gives_a_real_sheet_scaled_to_the_hero():
-    s = mk(); s.player.level = 4
+    s = mk(); s.player.level = 4; M.join_party(s, ch(s, "Сильфа"))     # two in the party: a dangerous wolf fits the budget
     eng, ev = run(s, [('<introduce name="Волк" count="2" side="враг" threat="опасный" desc="серый волк"', "/>"), ("<end", "/>")],
                   "*оглядываюсь*")
     w = ch(s, "Волк 1")

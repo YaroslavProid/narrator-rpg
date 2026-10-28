@@ -37,8 +37,9 @@ CONSUMABLES = [   # (name stems at a word start, effect) — first match wins
     (("противояд", "антидот"), "cure"),
     (("зелье маны", "эликсир маны", "мана", "маны", "эссенци", "эфир"), "mana"),
     (("зелье силы", "эликсир силы", "стимулятор", "боевой эликсир", "отвар ярости"), "buff"),
-    (("зель", "эликсир", "исцел", "целеб", "лечеб", "бинт", "бандаж", "аптеч", "припарк", "мазь", "снадоб", "аптечк"), "heal"),
     (("бомб", "гранат", "огненная склянк", "зажигат", "взрывча", "коктейль молотова"), "damage"),
+    (("зель", "эликсир", "исцел", "целеб", "лечеб", "бинт", "бандаж", "аптеч", "припарк", "мазь", "снадоб", "аптечк",
+      "склянк", "микстур", "тоник", "настойк", "бальзам", "отвар", "лекарств", "пилюл", "таблетк", "стимпак"), "heal"),
 ]
 POWER_WORDS = [(("мал", "слаб", "простой"), 1), (("больш", "сильн", "крепк"), 3), (("велик", "высш", "превосход"), 4)]
 
@@ -46,6 +47,8 @@ POWER_WORDS = [(("мал", "слаб", "простой"), 1), (("больш", "�
 def classify_consumable(item: Item) -> Item:
     n = item.name.lower()
     for stems, eff in CONSUMABLES:
+        if eff == "heal" and re.search(r"(?<![а-яё])(яд|отрав|кислот)", n):
+            continue                         # «склянка с ядом» is not a medicine
         if any(B.stem_at_word_start(n, st) for st in stems):
             item.effect = eff
             item.power = next((p for words, p in POWER_WORDS if any(B.stem_at_word_start(n, w) for w in words)), 2)
@@ -226,12 +229,36 @@ def apply_threat(scene: Scene, c: Character, threat: str = "обычный") -> 
     return f"{c.name}: {threat}, ур. {lvl}, HP {c.max_hp}"
 
 
+THREAT_WEIGHT = {"слабый": 0.5, "обычный": 1, "опасный": 2, "элита": 3, "босс": 5}
+THREAT_ORDER = ["слабый", "обычный", "опасный", "элита", "босс"]
+
+
+def encounter_room(scene: Scene) -> float:
+    """How much threat may still stand against the party (balance.ENCOUNTER_PER_MEMBER per party member)."""
+    standing = sum(THREAT_WEIGHT.get(c.threat or "обычный", 1) for cid in scene.present
+                   if (c := scene.characters.get(cid)) and c.side == "hostile" and c.hp > 0)
+    return B.ENCOUNTER_PER_MEMBER * len(M.party_ids(scene)) - standing
+
+
+def fit_threat(scene: Scene, threat: str) -> str:
+    """The strongest threat not above the asked one that still fits the room; '' when even «слабый» does not."""
+    t = norm_threat(threat) or "обычный"
+    room = encounter_room(scene)
+    for k in reversed(THREAT_ORDER[:THREAT_ORDER.index(t) + 1]):
+        if THREAT_WEIGHT[k] <= room + 1e-9:
+            return k
+    return ""
+
+
 def mark_foe(scene: Scene, c: Character, threat: str = "") -> str:
     """Someone fights the party: mark hostile and, if the sheet is blank, give it real stats."""
     if M.in_party(scene, c):
         return ""
+    want = norm_threat(threat or c.threat) or "обычный"
+    if c.side != "hostile" and is_blank(c) and want != "босс":
+        want = fit_threat(scene, want) or "слабый"     # a new foe joins only as strong as the party can stand
     c.side = "hostile"
-    return apply_threat(scene, c, threat or c.threat or "обычный")
+    return apply_threat(scene, c, want)
 
 
 # ---------------- the honest turn order ----------------
@@ -257,9 +284,9 @@ def check_end(scene: Scene) -> str:
         for cid in M.party_ids(scene):
             c = scene.characters[cid]
             c.conditions = [x for x in c.conditions if x.name != "оглушение"]
-            c.hp = max(c.hp, 1)
+            c.hp = max(c.hp, round(c.max_hp * B.DEFEAT_HP))
         return ("⟦ БОЙ ОКОНЧЕН ⟧ Отряд пал. Враги решают судьбу героя (плен, грабёж, уходят — добивать не обязательно); "
-                "опиши это. Герой приходит в себя с 1 HP.")
+                f"опиши это. Герой приходит в себя с четвертью сил.")
     return ""
 
 
@@ -425,10 +452,16 @@ def join_combat(scene: Scene, ids: list[str]) -> str:
     return f"⟦ БОЙ · раунд {cb.round} ⟧ В бой вступают: {', '.join(added)}. Ход: {scene.characters[cb.order[cb.current].id].name}."
 
 
-def end_combat(scene: Scene) -> str:
-    gone = {cid for cid in scene.present if (c := scene.characters.get(cid)) and not c.is_player
-            and c.side == "hostile" and c.hp <= 0 and cid not in scene.party}
+def clear_fallen(scene: Scene) -> list[str]:
+    """Fallen foes are bodies in the background, no longer «present»."""
+    gone = [cid for cid in scene.present if (c := scene.characters.get(cid)) and not c.is_player
+            and c.side == "hostile" and c.hp <= 0 and cid not in scene.party]
     scene.present = [cid for cid in scene.present if cid not in gone]
+    return gone
+
+
+def end_combat(scene: Scene) -> str:
+    clear_fallen(scene)
     for c in scene.characters.values():          # a fight's effects end with it (a downed ally is not stunned for later)
         c.conditions = [x for x in c.conditions if x.name not in ("оглушение", "щит", "усиление", "ослабление")]
     scene.combat = Combat()
@@ -605,6 +638,16 @@ def weapon_named(c: Character, text: str) -> str:
                 if re.search(r"(?<![а-яё])" + w[:4], t):
                     return i.name
     return ""
+
+
+BLOW_WORDS = STRIKE_WORDS + ("атак", "напада", "нападу", "добива", "добью", "стрел", "выстрел", "дерусь", "бьюсь",
+                             "замахива", "бросаюсь на", "кидаюсь на", "режу", "колю", "душу", "толкаю", "сбиваю")
+
+
+def wants_blow(text: str) -> bool:
+    """The player's own words ask the hero to hit someone (a blow, a shot, a throw)."""
+    t = (text or "").lower()
+    return any(w in t for w in BLOW_WORDS)
 
 
 def strikes_instead(text: str) -> bool:

@@ -210,6 +210,8 @@ def from_ai(raw: dict | None, base: Ruleset | None = None) -> Ruleset:
         dmg = int(x.get("damage") or 8)
         r.weapons.append(WeaponDef(stem=stem[0][:max(3, len(stem[0]) - 2)], name=name,
                                    damage=max(3, min(20, dmg)), ranged=bool(x.get("ranged"))))
+    res_names = {_n(x.label) for x in r.resources}
+    r.extra_attrs = [a for a in r.extra_attrs if _n(a.label) not in res_names]       # «Рассудок» is a resource, not both
     r.currency = s(raw.get("currency"), 60) or r.currency
     r.notes = s(raw.get("notes"), 400) or r.notes
     return r

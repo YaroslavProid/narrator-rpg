@@ -401,6 +401,12 @@ def apply_delta(scene: Scene, c: Character, delta: dict) -> tuple[list[str], lis
     if _int(delta.get("exp", 0)):
         rej.append("опыт назначает Система (за победы и трудные проверки), не рассказчик")
     adds = [a.strip() for a in re.split(r"[;,]", delta.get("add", "") or "") if a.strip()]
+    gives = [a.strip() for a in re.split(r"[;,]", delta.get("remove", "") or "") if a.strip()]
+    missing = [r_ for r_ in gives if not (next((i for i in c.inventory if i.name.lower() == r_.lower()), None)
+                                          or next((i for i in c.inventory if r_.lower() in i.name.lower()), None))]
+    if adds and missing:                      # an exchange for something the character does not have
+        rej.append(f"обмен отклонён: нет предмета «{missing[0]}», поэтому и «{adds[0]}» не получен")
+        adds = []
     for a in adds[:LIMITS["items_per_event"]]:
         if len(a) > LIMITS["item_len"] or any(w in a.lower() for w in FORBIDDEN_ITEM_WORDS):
             rej.append(f"предмет «{a}» отклонён"); continue

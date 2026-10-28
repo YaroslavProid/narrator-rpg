@@ -159,6 +159,10 @@ THREATS = {
     "босс":    (3, 110, 14, 18, 3),
 }
 
+ENCOUNTER_PER_MEMBER = 1.5      # threat a fight may hold per party member: слабый 0.5, обычный 1, опасный 2, элита 3, босс 5
+DEFEAT_HP = 0.25                 # a fallen party comes to with this share of health
+REST_SHARE = 0.05                # out of a fight every input gives back this share of health and mana
+
 # ---------------- chances («Система») ----------------
 HIT_BASE = 0.65                  # equal attacker attribute and target Ловкость
 CHECK_BASE = 0.50                # attribute equal to the difficulty

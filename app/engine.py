@@ -2,6 +2,7 @@
 dynamic per-turn budget, long-term memory (archive/summaries/facts/retrieval), rewind/regenerate."""
 import asyncio, difflib, itertools, json, re, time
 from . import tags as T
+from . import balance as B
 from . import config, mechanics as M, prompts as P, store
 from . import memory as MEM
 from . import combat as C
@@ -59,6 +60,11 @@ def create_scene(title: str, setting: str, player: dict, npcs: list[dict], rule_
             ex.qty += 1
         else:
             p.inventory.append(C.ensure_item_stats(Item(name=name), scene))
+    worn = set()
+    for it in sorted(p.inventory, key=lambda i: -(int(i.damage or 0) + 3 * i.armor)):
+        slot = it.slot or ("рука" if it.kind == "оружие" else "тело" if it.kind == "броня" else "")
+        if it.kind in ("оружие", "броня") and slot not in worn:
+            it.equipped = True; worn.add(slot)
     scene.present = [p.id]
     for n in npcs:
         c = new_character(scene, n["name"], n.get("description", ""), personality=n.get("personality", ""),
@@ -95,6 +101,7 @@ class TurnEngine:
         self.last_raw = {}                    # scene id -> the previous narrator step verbatim (a true loop repeats it)
         self.spoken = {}                      # scene id -> (who, intent) said this turn
         self.react_turn = {}                  # scene id -> this turn was the hero's reaction to a blow
+        self.hero_deeds = {}                  # scene id -> how many fighting actions the hero took this input
         self.lull_event = {}                  # scene id -> something notable happened this turn
         self.ephemeral = {}                   # scene id -> (index in scene.turns, line): current prompt only, never stored
         self.bg_running = False
@@ -759,8 +766,7 @@ class TurnEngine:
         prev = [e for e in scene.log if e.turn == scene.turn]
         introduced = any(e.kind == "system" and e.text.startswith("Новый персонаж") for e in prev)
         last = next((s for s in reversed(scene.stats) if "tier" in s), None)
-        combat = bool(last and "бой" in " ".join(last.get("tier_reasons", [])))
-        return introduced, (last or {}).get("tier"), combat
+        return introduced, (last or {}).get("tier"), False
 
     async def _turn(self, scene: Scene, text: str | None, emit, rollback: bool = True) -> dict:
         """Run one turn; on any failure (LLM down, timeout…) restore the pre-turn snapshot so the
@@ -874,7 +880,8 @@ class TurnEngine:
                                                                          companion=comp)})
         if lull_line:
             self.ephemeral[scene.id] = (len(scene.turns) - 1, lull_line)
-        steps = 0; speaks = 0; refusals = 0
+        steps = 0; speaks = 0; refusals = 0; seen_tags = set()
+        self.hero_deeds[scene.id] = 0
         self.narr_seen[scene.id] = []; self.last_raw[scene.id] = ""; self.spoken[scene.id] = []
         paused0 = (scene.combat.threat, scene.combat.awaiting)
         after_pause = 0
@@ -915,6 +922,12 @@ class TurnEngine:
                 steps -= 1  # declaring the scale is free
                 scene.turns.append({"role": "user", "content": f"[СИСТЕМА: результат] {b2.hint}"})
                 continue
+            sig = (tag.name, tuple(sorted((k, str(v).strip().lower()) for k, v in tag.attrs.items())))
+            if sig in seen_tags:
+                scene.turns.append({"role": "user", "content": "[СИСТЕМА: результат] Отклонено: этот тег уже был в этом "
+                                                               "ходу и выполнен. Закончи <end/>."})
+                break
+            seen_tags.add(sig)
             if tag.name == "speak" and speaks >= budget.hard_speaks:
                 result = "На этот ход реплик достаточно. Заверши ход повествованием и <end/>."
             else:
@@ -946,6 +959,14 @@ class TurnEngine:
                 await self.next_turns(scene, emit, transcript)
             elif cur is not None and not M.in_party(scene, cur):            # the turn got stuck on a foe
                 await self.emit_foes(scene, emit, transcript, C.run_foes(scene))
+        if not scene.combat.active and not was_combat:
+            C.clear_fallen(scene)
+            for cid in M.party_ids(scene):
+                c = scene.characters[cid]
+                if 0 < c.hp < c.max_hp:
+                    c.hp = min(c.max_hp, c.hp + max(1, round(c.max_hp * B.REST_SHARE)))
+                if c.mp < c.max_mp:
+                    c.mp = min(c.max_mp, c.mp + max(1, round(c.max_mp * B.REST_SHARE)))
         self.ephemeral.pop(scene.id, None)
         self.lull_update(scene, was_combat, down0, "перемещение/новое место" in budget.reasons, bool(lull_line))
         narr_words = sum(len(p["text"].split()) for p in transcript if p["kind"] == "narration")
@@ -1037,13 +1058,30 @@ class TurnEngine:
         spec = T.TAGS.get(tag.name)
         if spec is None or not spec.handler:
             return "Неизвестное действие."
+        if tag.name in ("attack", "deed", "cast", "escape"):
+            who = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
+            if who.is_player:
+                if self.hero_deeds.get(scene.id, 0) >= 1:
+                    return ("Отклонено: герой уже действовал в ответ на этот ввод — следующее действие выберет игрок. "
+                            "Опиши результат и закончи <end/>.")
+                it = self.intent.get(scene.id)
+                acts = " ".join(it.actions) if it is not None else ""
+                if tag.name == "attack" and it is not None and not C.wants_blow(acts):
+                    return ("Отклонено: игрок не писал, что герой нападает или стреляет. Не начинай за него драку: "
+                            "покажи, как отвечают другие, и закончи <end/>.")
         if spec.turn_gated:                                        # in a fight only on the actor's own turn
             actor = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
             refused = self.out_of_turn(scene, actor, tag.name) or self.hero_idle(scene, actor, tag.name)
             if refused:
                 return refused
         r = await getattr(self, "_tag_" + spec.handler)(scene, tag, a, emit, calls, transcript)
-        return r if r is not None else "Неизвестное действие."
+        if r is None:
+            return "Неизвестное действие."
+        if tag.name in ("attack", "deed", "cast", "escape") and not r.startswith("Отклонено"):
+            who = (M.resolve_character(scene, a.get("who", "")) if a.get("who") else scene.player) or scene.player
+            if who.is_player:
+                self.hero_deeds[scene.id] = self.hero_deeds.get(scene.id, 0) + 1
+        return r
 
     async def _tag_speak(self, scene, tag, a, emit, calls, transcript) -> str:
         c = M.resolve_character(scene, a.get("who", ""), only_present=True) or M.resolve_character(scene, a.get("who", ""))
@@ -1053,7 +1091,7 @@ class TurnEngine:
                     scene.characters[i].name for i in scene.present if i != scene.player_id) + "."
             c = await self._introduce(scene, a["who"], "", emit, transcript)
         if c.is_player:
-            return (f"{c.name} — персонаж игрока; его слова уже даны во вводе игрока, повторять их не нужно. "
+            return (f"Отклонено: {c.name} — персонаж игрока; его слова уже даны во вводе игрока, повторять их не нужно. "
                     f"Не описывай заново его действие: покажи реакцию NPC (через speak) или закончи <end/>.")
         said = self.spoken.setdefault(scene.id, [])
         if any(w == c.id and difflib.SequenceMatcher(None, a.get("intent", ""), i).ratio() > 0.8 for w, i in said):
@@ -1150,17 +1188,29 @@ class TurnEngine:
             count = 1
         base = re.sub(r"\s*\d+$", "", a["name"]).strip() or a["name"]   # «Волк 1» + count=3 → «Волк 1…3», not «Волк 1 1»
         names = [a["name"]] if count == 1 else [f"{base} {i}" for i in range(1, count + 1)]
-        made = []
-        for nm in names:
+        made, notes = [], []
+        for k, nm in enumerate(names):
+            want = C.norm_threat(a.get("threat", "")) or "обычный"
+            fitted = C.fit_threat(scene, want) if hostile else want
+            if hostile and not fitted and want != "босс":
+                if k == 0:
+                    fitted = "слабый"              # one foe always comes: the story asked for it
+                else:
+                    notes.append(f"Больше {k} противников отряду сейчас не выстоять — остальные не появились.")
+                    break
+            fitted = fitted or want
             c = await self._introduce(scene, nm, a.get("desc", ""), emit, transcript, exact=count > 1)
             if hostile and not M.in_party(scene, c):
-                C.mark_foe(scene, c, a.get("threat", ""))
+                C.mark_foe(scene, c, fitted)
+                if fitted != want:
+                    notes.append(f"{c.name}: угроза снижена до «{fitted}» — по силам отряда.")
             elif a.get("threat") and not c.threat:
                 c.threat = C.norm_threat(a["threat"])           # remembered for a fight that may come; not hostile
             made.append(c)
-        if count == 1:
-            return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}."
-        return f"В сцену входят: {', '.join(c.name for c in made)}. Обращайся к каждому по имени."
+        note = (" " + " ".join(notes)) if notes else ""
+        if len(made) == 1:
+            return f"В сцену входит {made[0].name}: {made[0].description or 'новый персонаж'}.{note}"
+        return f"В сцену входят: {', '.join(c.name for c in made)}. Обращайся к каждому по имени.{note}"
 
     async def _tag_discover_learn(self, scene, tag, a, emit, calls, transcript) -> str:
         from . import magic as G
@@ -1179,7 +1229,7 @@ class TurnEngine:
         ab = C.find_ability(caster, a.get("spell", ""))
         if not ab:
             have = ", ".join(x.name for x in caster.abilities if x.kind == "active") or "нет"
-            return (f"У {caster.name} нет способности «{a.get('spell')}». Активные: {have}. "
+            return (f"Отклонено: у {caster.name} нет способности «{a.get('spell')}». Активные: {have}. "
                     f"Опиши попытку без результата или выбери другое действие.")
         raw_t = a.get("target", "") or ""
         named = [M.resolve_character(scene, x) for x in re.split(r"\s*(?:,|;|\sи\s)\s*", raw_t) if x.strip()]
@@ -1320,7 +1370,13 @@ class TurnEngine:
         if gate:
             return gate
         if actor.hp <= 0:
-            return f"{actor.name} без сознания. Закончи <end/>."
+            return f"Отклонено: {actor.name} без сознания. Закончи <end/>."
+        it = self.intent.get(scene.id)
+        said = M.norm(" ".join((it.actions if it is not None else []) + [a.get("how", "")]))
+        ab = next((x for x in actor.abilities if x.kind == "active" and M.norm(x.name) and M.norm(x.name) in said), None)
+        if ab is not None:
+            return await self._tag_cast(scene, tag, {"who": actor.name, "spell": ab.name, "target": a.get("target", "")},
+                                        emit, calls, transcript)
         tgt = M.resolve_character(scene, a.get("target", "")) if a.get("target") else None
         effect = C.pick(C.EFFECTS, a.get("effect", ""), "нет")
         if tgt is not None and tgt.hp <= 0 and effect != "усиление":

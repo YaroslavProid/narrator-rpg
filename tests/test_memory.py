@@ -114,8 +114,8 @@ def test_rewind_and_regenerate():
 def test_speak_soft_cap():
     s = mk(); eng = TurnEngine(FakeLLM([])); s.settings.max_speaks = 1
     outs = []
-    for _ in range(6):
-        outs += [('<narrate>Шум.</narrate><speak who="Сильфа" intent="болтать"', "/>"), ("Ну и ну.", "»")]
+    for i in range(6):
+        outs += [(f'<narrate>Шум.</narrate><speak who="Сильфа" intent="болтать о теме номер {i} подробно"', "/>"), ("Ну и ну.", "»")]
     ev = play(s, eng, outs[:3] + outs[4:6] + [("<end", "/>")], "Спрашиваю: «Как дела?»")
     assert s.stats[-1]["speaks"] == 1
     assert "реплик достаточно" in eng.prompt(s)

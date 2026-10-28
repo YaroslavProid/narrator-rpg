@@ -63,6 +63,19 @@ class AbilityIn(BaseModel):
     description: str = ""
     cost: str = ""
     cooldown: str = ""
+    # what it does and how strong (magic.card_ability fits it to the guide)
+    effect: str = ""
+    scale: str = ""
+    bonus: str = ""
+    power: int | str = 0
+    mp: int = 0
+    targets: int = 1
+    rider: str = ""
+    rider_turns: int = 0
+    self_hp: int = 0
+    recharge: int = 0
+    value: int = 0
+    rule: str = ""
 
 
 class PlayerIn(BaseModel):
